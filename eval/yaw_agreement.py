@@ -7,7 +7,8 @@ sample. Labels of faces outside it (their image was removed in the review) are c
 Reports Cohen's kappa over the four labels, with a 95% confidence interval from the bootstrap over images that
 score.py uses (10,000 resamples of the images, numpy's default_rng(0), percentile interval); kappa over the faces
 neither author called unclear; the observed agreement; each author's counts; and the confusion table. Writes the
-faces they disagree on to eval/labels/yaw-disagreements.csv, keeping any `settled` labels already filled in. Once
+faces they disagree on to eval/labels/yaw-disagreements.csv, with a column of labels named after each author (in
+alphabetical order) and a `settled` column, keeping any settled labels already filled in. Once
 the authors have filled the `settled` column together, --write puts the final labels into the yaw column of
 eval/manifest/faces.csv: the shared label where they agree, the settled one where they did not.
 """
@@ -19,7 +20,6 @@ import score
 import yaw_sheet
 
 ROOT = Path(__file__).resolve().parents[1]
-DISAGREEMENT_COLUMNS = ['imageId', 'faceId', 'first', 'second', 'settled']
 
 
 def kappa(table):
@@ -93,12 +93,14 @@ def main(argv=None):
 
     path = args.labels / 'yaw-disagreements.csv'
     settled = {(r['imageId'], r['faceId']): r['settled'] for r in build_manifest.read_csv(path)} if path.exists() else {}
-    rows = [{'imageId': i, 'faceId': n, 'first': first[(i, n)], 'second': second[(i, n)],
+    by_name = dict(zip(args.labellers, (first, second)))
+    names = sorted(args.labellers)
+    rows = [{'imageId': i, 'faceId': n, **{name: by_name[name][(i, n)] for name in names},
              'settled': settled.get((i, n), '')} for i, n in sorted(chosen) if first[(i, n)] != second[(i, n)]]
     bad = [r for r in rows if r['settled'] not in ('', *yaw_sheet.LABELS)]
     if bad:
         sys.exit(f'{path}: settled must be one of {", ".join(yaw_sheet.LABELS)}, for example {bad[0]["imageId"]}')
-    build_manifest.write_csv(path, DISAGREEMENT_COLUMNS, rows)
+    build_manifest.write_csv(path, ['imageId', 'faceId', *names, 'settled'], rows)
     summary['disagreements'] = len(rows)
     summary['unsettled'] = sum(not r['settled'] for r in rows)
 

@@ -120,10 +120,11 @@ def test_agreement_reports_kappa_and_keeps_settled_labels(tmp_path, capsys):
         yaw_agreement.main(args + ['--write'])
 
     disagreements = bm.read_csv(tmp_path / 'labels/yaw-disagreements.csv')
+    assert list(disagreements[0]) == ['imageId', 'faceId', 'ann', 'bob', 'settled']
     for row in disagreements:
-        row['settled'] = row['first']
-    bm.write_csv(tmp_path / 'labels/yaw-disagreements.csv', yaw_agreement.DISAGREEMENT_COLUMNS, disagreements)
-    yaw_agreement.main(args)  # a rerun keeps what was settled
+        row['settled'] = row['ann']
+    bm.write_csv(tmp_path / 'labels/yaw-disagreements.csv', list(disagreements[0]), disagreements)
+    yaw_agreement.main(args[:-3] + ['--labellers', 'bob', 'ann'])  # a rerun, in either order, keeps what was settled
     assert all(r['settled'] for r in bm.read_csv(tmp_path / 'labels/yaw-disagreements.csv'))
     yaw_agreement.main(args + ['--write'])
     written = {(f['imageId'], f['faceId']): f['yaw'] for f in bm.read_csv(tmp_path / 'manifest/faces.csv')}

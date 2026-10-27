@@ -54,7 +54,7 @@ textarea {{ width: 100%; height: 10em; font: 12px monospace }}
 const faces = {faces};
 const labels = new Map({existing});
 const names = {names};
-let at = 0;
+let at = 0, unsaved = false;
 const crop = document.getElementById('crop'), progress = document.getElementById('progress');
 const csv = document.getElementById('csv');
 const key = (f) => f.imageId + ',' + f.faceId;
@@ -74,11 +74,12 @@ function choose(label) {{
   if (at >= faces.length) return;
   labels.set(key(faces[at]), label);
   at += 1;
+  unsaved = true;
   show();
 }}
 document.addEventListener('keydown', (e) => {{
   if (e.key >= '1' && e.key <= '4') choose(names[Number(e.key) - 1]);
-  if (e.key === 'Backspace' && at > 0) {{ at -= 1; labels.delete(key(faces[at])); show(); e.preventDefault(); }}
+  if (e.key === 'Backspace' && at > 0) {{ at -= 1; labels.delete(key(faces[at])); unsaved = true; show(); e.preventDefault(); }}
 }});
 document.querySelectorAll('button[data-label]').forEach((b) => b.addEventListener('click', () => choose(b.dataset.label)));
 document.getElementById('download').addEventListener('click', () => {{
@@ -86,7 +87,12 @@ document.getElementById('download').addEventListener('click', () => {{
   link.href = URL.createObjectURL(new Blob([csv.value], {{type: 'text/csv'}}));
   link.download = 'yaw-{labeller}.csv';
   link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+  unsaved = false;
 }});
+csv.addEventListener('copy', () => {{ unsaved = false; }});
+// The labels live only in this page until the box is saved: warn before closing it with labels not yet saved.
+window.addEventListener('beforeunload', (e) => {{ if (unsaved) e.preventDefault(); }});
 show();
 </script>
 </html>
