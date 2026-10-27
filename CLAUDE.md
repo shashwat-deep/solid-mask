@@ -53,12 +53,15 @@ npm run build       # type-checks, then writes the site to app/dist
 npm run preview     # serves app/dist
 ```
 
-Privacy suite (`tests/`, see `tests/README.md`):
+`dev` and `build` first run `npm run fetch-model`, which downloads the YuNet model into `app/models/` and checks its SHA-256 (models are never committed).
+
+Unit tests and privacy suite (`tests/`, see `tests/README.md`):
 
 ```bash
 cd tests
 npm ci
 npx playwright install --with-deps chromium firefox webkit
-npm test            # builds app/ if it exists, then runs every test in Chromium, Firefox and WebKit
+npm test            # builds app/, runs the unit tests, then the privacy suite in Chromium, Firefox and WebKit
+npm run test:unit   # unit tests only (Vitest, no browser)
 npm run typecheck
 ```

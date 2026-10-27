@@ -3,8 +3,9 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <!-- Every file comes from this site and nothing else may load (CLAUDE.md, rule 2). -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; img-src 'self' blob: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+    <!-- Every file comes from this site and nothing else may load (CLAUDE.md, rule 2).
+         'wasm-unsafe-eval' lets ONNX Runtime compile its WebAssembly; it allows no other code. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' blob: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
     <meta name="referrer" content="no-referrer">
     <title>solid-mask</title>
     <!-- An empty icon, so the browser does not ask the server for one after the page has loaded. -->
@@ -23,5 +24,8 @@
       <p id="status" role="status">Loading…</p>
       <canvas id="photo" hidden></canvas>
     </main>
+    <footer>
+      <a href="./licences.txt">Licences</a> · <a href="https://github.com/shashwat-deep/solid-mask">Source code</a>
+    </footer>
   </body>
 </html>

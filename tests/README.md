@@ -1,5 +1,9 @@
 # Tests
 
+## Unit tests
+
+`unit/` tests the app's pure functions in Node with Vitest, without a browser: for now, the YuNet input tensor (resizing, letterboxing, channel order), the decoding of the model's outputs, and non-maximum suppression.
+
 ## Privacy suite
 
 `privacy/` holds one Playwright test for each promise in the README's "What it never does with your photos". Each test drives the production build in `app/dist` the way a person would (wait until the page is ready, tap **Choose photos**, wait for the blocks, tap **Save**) in Chromium, Firefox and WebKit. A small server, `server.ts`, serves the build under `/solid-mask/` with no special headers, as GitHub Pages does.
@@ -31,4 +35,4 @@ npx playwright install --with-deps chromium firefox webkit
 npm test
 ```
 
-`npm test` first builds `app/` (run `npm ci` there once), then runs the suite. `npm run typecheck` checks the types.
+`npm test` first builds `app/` (run `npm ci` there once), then runs the unit tests and the privacy suite. `npm run test:unit` runs the unit tests alone, and `npm run typecheck` checks the types.
