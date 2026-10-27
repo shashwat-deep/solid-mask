@@ -41,4 +41,14 @@ If you don't know whose session you are in, ask. Don't edit the other person's f
 
 ## Commands
 
-None yet. Add the app's install, dev, test and build commands here at M1, and the eval commands once they exist.
+Add the app's install, dev and build commands here at M1, and the eval commands once they exist.
+
+Privacy suite (`tests/`, see `tests/README.md`):
+
+```bash
+cd tests
+npm ci
+npx playwright install --with-deps chromium firefox webkit
+npm test            # builds app/ if it exists, then runs every test in Chromium, Firefox and WebKit
+npm run typecheck
+```
