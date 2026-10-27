@@ -11,16 +11,6 @@ UPRIGHT = (240, 320)                             # width, height of the made-up 
 FACES = [(40, 50, 60, 80), (150, 200, 50, 40)]   # x, y, w, h
 
 
-@pytest.fixture(scope='module')
-def chromium():
-    playwright = pytest.importorskip('playwright.sync_api')
-    try:
-        with playwright.sync_playwright() as pw:
-            pw.chromium.launch().close()
-    except playwright.Error as e:
-        pytest.skip(f'no Chromium for Playwright (python -m playwright install --only-shell chromium): {e}')
-
-
 def stored_jpeg(rotation):
     """The made-up photo as Open Images would store it: turned clockwise, so that turning it counterclockwise by
     rotation makes it upright."""
@@ -94,6 +84,34 @@ def test_runner_turns_every_image_upright_and_reruns_identically(chromium, tmp_p
         run_detect.main(args + ['--run-id', 'a'])
     run_detect.main(args + ['--split', 'report', '--limit', '1'])  # a run id of its own, never an old one
     assert len(list((tmp_path / 'out').glob('*-stub-yunet-640-single.jsonl'))) == 1
+
+
+def test_runner_makes_each_transform_and_score_reads_it(chromium, tmp_path):
+    """Rotated copies keep every face covered. At 45 degrees the usual recall drops while every face stays covered:
+    the exact box around a face turned 45 degrees has IoU 0.49 with it, and the stub's box, a little smaller at the
+    corners, sometimes just passes 0.5. Darkened by 2 EV, the stub's magenta is too dark for it to find."""
+    args = make_test_set(tmp_path) + ['--run-id', 't', '--transforms', 'none,rot0,rot45,rot90,dark2']
+    run_detect.main(args)
+    lines = [json.loads(line) for line in (tmp_path / 'out/t.jsonl').read_text().splitlines()][1:]
+    assert [(line['transform'], line['imageId']) for line in lines] == [
+        (t, i) for t in ('none', 'rot0', 'rot45', 'rot90', 'dark2') for i in ('r000', 'r090', 'r180', 'r270')]
+    info = json.loads((tmp_path / 'out/t.run_info.json').read_text())
+    assert info['transforms'] == ['none', 'rot0', 'rot45', 'rot90', 'dark2']
+    assert info['transformParameters']['darkening']['lambdaShot'] == pytest.approx(0.0010954, rel=1e-4)
+
+    score.main([str(tmp_path / 'out/t.jsonl'), '--pad', '0', '--threshold', '0.5', '--split', 'all',
+                '--manifest', str(tmp_path / 'manifest'), '--out', str(tmp_path / 'score.json')])
+    groups = {g['transform']: g for g in json.loads((tmp_path / 'score.json').read_text())['groups']}
+    for t in ('none', 'rot0', 'rot45', 'rot90'):
+        assert groups[t]['faces'] == 8 and groups[t]['missRate']['value'] == 0, t
+        assert groups[t]['falseMasksPerImage']['value'] == 0, t
+    assert groups['rot0']['recallIoU50']['value'] == groups['rot90']['recallIoU50']['value'] == 1
+    assert groups['rot45']['recallIoU50']['value'] < 1
+    assert groups['dark2']['missRate']['value'] == 1
+
+    for bad in ('blur3', 'none,none'):
+        with pytest.raises(SystemExit):
+            run_detect.main(args[:-1] + [bad])
 
 
 def test_runner_refuses_images_that_differ_from_the_manifest(tmp_path):
