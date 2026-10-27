@@ -78,6 +78,8 @@ uv venv --python 3.13 .venv && uv pip sync --python .venv/bin/python eval/requir
 .venv/bin/python eval/run_detect.py --page URL                   # detections into results/detections/ (--page stub: data/stub-runs/)
 .venv/bin/python eval/run_detect.py --page URL --transforms none,rot45,dark2   # also rotated and darkened copies
 .venv/bin/python eval/check_colour.py                             # the transforms' sRGB images match Chromium's
+.venv/bin/python eval/yaw_sheet.py --labeller NAME             # page for labelling the yaw sample
+.venv/bin/python eval/yaw_agreement.py [--write]               # Cohen's kappa; --write fills faces.csv yaw
 .venv/bin/python eval/score.py RUN.jsonl --operating-point       # pad and threshold, on the tune split
 .venv/bin/python eval/score.py RUN.jsonl --pad P --threshold T   # score the report split
 ```

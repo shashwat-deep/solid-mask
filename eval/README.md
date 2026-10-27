@@ -14,6 +14,9 @@ The scripts here measure how often the tool leaves a face uncovered, following [
 - `stub/`: a stand-in for the app's eval page with the same interface, used until that page exists and by the tests.
 - `score.py`: scores a detections file against the manifest: missed faces, faces covered completely, detection recall and false masks, each with a 95% confidence interval, and the operating point.
 - `transforms.py`: the rotation and darkening transforms, their parameters, and the geometry of a rotation, which `score.py` uses.
+- `yaw_sheet.py`: makes a page for labelling the yaw of the sample faces.
+- `yaw_agreement.py`: compares the two authors' yaw labels (Cohen's κ) and writes the settled labels into `manifest/faces.csv`.
+- `labels/`: each author's yaw labels, and the faces they disagreed on.
 - `check_colour.py`: checks that the images the transforms start from have the pixels Chromium decodes.
 - `tests/`: tests for these scripts (pytest).
 
@@ -58,6 +61,15 @@ The runner gives each image to the page itself, on the page's own address, so no
 ```
 
 The first finds the padding and threshold on the tune split by the protocol's rule; the second scores the report split at those values. Each transform and setting in the file is scored on its own. A mask covers whole pixels, rounded outward as the app paints it, and a face's covered share is computed exactly from those pixels, so a face turned by a rotation transform needs no special case. The summary is JSON (`--out`); `--faces` also writes one row per face for further breakdowns.
+
+## Yaw labels
+
+Each of us labels the same 600 faces alone, once the test set is frozen ([`docs/eval-protocol.md`](../docs/eval-protocol.md), part B, "Breakdowns"):
+
+1. `.venv/bin/python eval/yaw_sheet.py --labeller <your name>` writes `data/yaw/<your name>/index.html`. Open it, label each face with the keys 1 to 4, and save the box at the bottom as `labels/yaw-<your name>.csv`. You can stop and go on later: the page shows only the faces the file doesn't label yet. Don't open the other author's file until you have both finished.
+2. `.venv/bin/python eval/yaw_agreement.py --out results/yaw-agreement.json` reports Cohen's κ with its confidence interval and writes the faces you disagree on to `labels/yaw-disagreements.csv`.
+3. Settle each of those together and write the agreed label in its `settled` column.
+4. `.venv/bin/python eval/yaw_agreement.py --write` puts the final labels into the `yaw` column of `manifest/faces.csv`, which `score.py` breaks the miss rate down by.
 
 ## How the test set is drawn
 
