@@ -49,6 +49,17 @@ canvas {
   height: auto;
 }
 
+footer {
+  max-width: 40rem;
+  margin: 2rem auto 0;
+  padding: 1rem;
+  font-size: 0.875rem;
+}
+
+a {
+  color: inherit;
+}
+
 [hidden] {
   display: none !important;
 }

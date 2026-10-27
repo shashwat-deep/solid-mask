@@ -1,4 +1,6 @@
+import { DETECTION } from './config.ts';
 import { decode } from './pipeline/decode.ts';
+import { detectFaces, loadDetector } from './pipeline/detect.ts';
 
 function element<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id);
@@ -27,15 +29,17 @@ function show(image: ImageBitmap): void {
 
 async function open(photo: File): Promise<void> {
   choose.disabled = true;
-  say('Opening the photo…');
+  say('Looking for faces…');
   try {
     const image = await decode(photo);
+    let found: number;
     try {
+      found = (await detectFaces(image, DETECTION)).length;
       show(image);
     } finally {
       image.close();
     }
-    say('Here is your photo.');
+    say(found === 1 ? 'Found 1 face.' : `Found ${found} faces.`);
   } catch (error) {
     console.error(error);
     canvas.hidden = true;
@@ -53,5 +57,14 @@ file.addEventListener('change', () => {
   if (photo) void open(photo);
 });
 
-say('Ready. Choose a photo.');
-choose.disabled = false;
+// Everything the app needs is loaded before it says it is ready; after that it works offline.
+loadDetector().then(
+  () => {
+    say('Ready. You can switch on airplane mode now: nothing else needs to load.');
+    choose.disabled = false;
+  },
+  (error: unknown) => {
+    console.error(error);
+    say("The face finder couldn't load. Check your connection, then reload the page.");
+  },
+);
