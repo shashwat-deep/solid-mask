@@ -41,7 +41,30 @@ If you don't know whose session you are in, ask. Don't edit the other person's f
 
 ## Commands
 
-App: none yet. Add the install, dev, test and build commands here at M1.
+App (`app/`):
+
+```bash
+cd app
+npm ci
+npm run dev         # development server
+npm run build       # type-checks, then writes the site to app/dist
+npm run preview     # serves app/dist
+```
+
+`dev` and `build` first run `npm run fetch-model`, which downloads the YuNet model into `app/models/` and checks its SHA-256 (models are never committed).
+
+Unit tests and privacy suite (`tests/`, see `tests/README.md`):
+
+```bash
+cd tests
+npm ci
+npx playwright install --with-deps chromium firefox webkit
+npm test            # builds app/, runs the unit tests, then the privacy suite in Chromium, Firefox and WebKit
+npm run test:unit   # unit tests only (Vitest, no browser)
+npm run typecheck
+```
+
+CI (`.github/workflows/pages.yml`) runs `npm test` in `tests/` on every pull request and push to `main`; on `main` it then deploys the tested `app/dist` to GitHub Pages.
 
 Eval, from the top folder (`eval/README.md` explains each step):
 
