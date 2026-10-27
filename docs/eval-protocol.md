@@ -30,7 +30,7 @@ Draft for M0. Owner: Shashwat Deep; reviewer: Pratyush. Both authors agreed on e
 - Missed face: a face that is not protected. Miss rate = missed faces / all faces. Depictions are counted on their own (Breakdowns).
 - Also reported: the share of faces covered completely, and the share matched by a detected box at IoU ≥ 0.5, the usual detection recall, for comparison with published results. For this match the boxes are taken before padding and clipped to the image, in order of score, and each box matches at most one face, the unmatched face it overlaps most.
 - False mask: a mask with IoU below 0.1 against every annotated face, depictions included. Reported per image.
-- Uncertainty: 95% confidence intervals from a bootstrap over images, since faces in the same photo are not independent; 10,000 resamples of the images, drawn with numpy's `default_rng(0)`, the same resamples for every value from one run and setting; the interval runs from the 2.5th to the 97.5th percentile.
+- Uncertainty: 95% confidence intervals from a bootstrap over images, since faces in the same photo are not independent; 10,000 resamples of the images, drawn with numpy's `default_rng(0)`, the same resamples for every value from one run and setting; the interval runs from the 2.5th to the 97.5th percentile. For a breakdown, resamples that hold none of its faces are left out of its interval, and their number is reported with it.
 
 ### Operating point, set on the tune split
 

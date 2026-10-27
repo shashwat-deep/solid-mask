@@ -191,6 +191,8 @@ def test_main_rejects_bad_detection_files(tmp_path):
             score.main([str(tmp_path / 'run.jsonl')] + args)
     with pytest.raises(SystemExit):
         score.main([str(tmp_path / 'run.jsonl'), '--pad', '0', '--operating-point'])
+    with pytest.raises(SystemExit):
+        score.main([str(tmp_path / 'run.jsonl'), '--operating-point', '--split', 'report'])
 
 
 def test_operating_point_follows_the_protocol_rule(tmp_path, capsys):

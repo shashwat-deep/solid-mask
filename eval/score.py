@@ -20,7 +20,8 @@ A mask is false when its IoU with every annotated face, depictions included, is 
 The miss rate, the share covered completely and the recall count the faces that are not depictions; depictions
 are reported on their own. Each value has a 95% confidence interval from a bootstrap over images: 10,000 resamples
 of the images drawn with numpy's default_rng(0), the same resamples for every value of a group, and the 2.5th and
-97.5th percentiles. Each transform and setting (inputSize and tiling) in the run is scored on its own.
+97.5th percentiles. Resamples that hold no face of a breakdown are left out of its interval and counted in
+resamplesWithNoFaces. Each transform and setting (inputSize and tiling) in the run is scored on its own.
 
 --operating-point applies the protocol's rule on the tune split, with no transform, for each setting: for each
 threshold from 0.05 to 0.99 in steps of 0.01, take the smallest pad from 0 to 1 in steps of 0.05 at which at least
@@ -29,9 +30,10 @@ pad, false masks stay at or below 0.25 per image.
 
 The summary is JSON, printed or written to --out. --faces writes one CSV row per face, for further breakdowns.
 """
-import argparse, csv, hashlib, json, math, sys
+import argparse, csv, json, math, sys
 from pathlib import Path
 import numpy as np
+import download
 import transforms
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -200,15 +202,16 @@ class Bootstrap:
     """Ratio estimates with percentile intervals from one set of resamples of the images."""
 
     def __init__(self, n_images):
-        rng = np.random.default_rng(SEED)
-        self.draws = rng.integers(0, n_images, size=(RESAMPLES, n_images)) if n_images else None
+        draws = np.random.default_rng(SEED).integers(0, n_images, size=(RESAMPLES, n_images)) if n_images else None
+        # How often each resample draws each image, so that a resample's sum is one matrix product.
+        self.counts = None if draws is None else np.stack([np.bincount(d, minlength=n_images) for d in draws])
 
     def ratio(self, numerator, denominator):
         num, den = np.asarray(numerator, float), np.asarray(denominator, float)
         result = {'value': float(num.sum() / den.sum()) if den.sum() else None, 'count': int(num.sum()),
                   'n': int(den.sum())}
-        if self.draws is not None and den.sum():
-            n, d = num[self.draws].sum(axis=1), den[self.draws].sum(axis=1)
+        if self.counts is not None and den.sum():
+            n, d = self.counts @ num, self.counts @ den
             ratios = n[d > 0] / d[d > 0]
             result['low'], result['high'] = (float(v) for v in np.percentile(ratios, [2.5, 97.5]))
             if (d == 0).any():
@@ -281,8 +284,10 @@ def operating_point(images):
     return None
 
 
-def sha256(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+def setting_label(setting):
+    tiling = setting['tiling']
+    name = 'single' if tiling['kind'] == 'none' else f'tiles {tiling["longSide"]}/{tiling["overlap"]}'
+    return f'{name} at {setting["inputSize"]} px'
 
 
 def main(argv=None):
@@ -291,21 +296,21 @@ def main(argv=None):
     ap.add_argument('--pad', type=float, help='padding as a share of the box size, for example 0.10')
     ap.add_argument('--threshold', type=float, help='score threshold, at least 0.05')
     ap.add_argument('--operating-point', action='store_true', help='find pad and threshold on the tune split')
-    ap.add_argument('--split', choices=('tune', 'report', 'all'), default='report')
+    ap.add_argument('--split', choices=('tune', 'report', 'all'), help='default: report (tune with --operating-point)')
     ap.add_argument('--manifest', type=Path, default=ROOT / 'eval/manifest')
     ap.add_argument('--out', type=Path, help='write the JSON summary here instead of printing it')
     ap.add_argument('--faces', type=Path, help='write one CSV row per face here')
     args = ap.parse_args(argv)
-    if args.operating_point == (args.pad is not None or args.threshold is not None):
+    if args.operating_point != (args.pad is None and args.threshold is None):
         ap.error('give either --operating-point or both --pad and --threshold')
-    if not args.operating_point and (args.pad is None or args.threshold is None):
-        ap.error('give both --pad and --threshold')
+    if args.operating_point and args.split not in (None, 'tune'):
+        ap.error('the operating point is set on the tune split only')
 
     images, faces = load_manifest(args.manifest)
     run, groups = load_detections(args.detections, images, faces)
-    split = 'tune' if args.operating_point else args.split
-    result = {'run': run, 'detections': str(args.detections), 'detectionsSha256': sha256(args.detections),
-              'manifestSha256': {name: sha256(args.manifest / name) for name in ('images.csv', 'faces.csv')},
+    split = 'tune' if args.operating_point else args.split or 'report'
+    result = {'run': run, 'detections': str(args.detections), 'detectionsSha256': download.sha256_file(args.detections),
+              'manifestSha256': {name: download.sha256_file(args.manifest / name) for name in ('images.csv', 'faces.csv')},
               'split': split, 'groups': []}
     face_rows = []
     for (transform, setting), group in sorted(groups.items()):
@@ -343,13 +348,14 @@ def main(argv=None):
             writer.writeheader()
             writer.writerows({**r, 'coverage': f'{r["coverage"]:.6f}'} for r in face_rows)
     for g in result['groups']:
+        where = f'{g["transform"]}, {setting_label(g)}'
         if 'missRate' not in g:
-            print(f'{g["transform"]} {g["inputSize"]} {g["tiling"]}: no operating point meets the rule',
+            print(f'{where}: no operating point meets the rule',
                   file=sys.stderr)
             continue
         m = g['missRate']
         ci = f' [{m["low"]:.4f}, {m["high"]:.4f}]' if 'low' in m else ''
-        print(f'{g["transform"]} {g["inputSize"]} {g["tiling"]}: pad {g["pad"]}, threshold {g["threshold"]}, '
+        print(f'{where}: pad {g["pad"]}, threshold {g["threshold"]}, '
               f'{g["images"]} of {g["imagesInSplit"]} {split} images, {g["faces"]} faces, miss rate '
               f'{m["value"] if m["value"] is None else round(m["value"], 4)}{ci}', file=sys.stderr)
 
