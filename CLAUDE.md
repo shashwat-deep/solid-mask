@@ -41,4 +41,14 @@ If you don't know whose session you are in, ask. Don't edit the other person's f
 
 ## Commands
 
-None yet. Add the app's install, dev, test and build commands here at M1, and the eval commands once they exist.
+App: none yet. Add the install, dev, test and build commands here at M1.
+
+Eval, from the top folder (`eval/README.md` explains each step):
+
+```bash
+uv venv --python 3.13 .venv && uv pip sync --python .venv/bin/python eval/requirements.txt   # once
+.venv/bin/python -m pytest eval/tests          # tests
+.venv/bin/python eval/download.py              # test images into data/, checked against their SHA-256s
+.venv/bin/python eval/review_sheet.py          # page for reviewing the images not yet reviewed
+.venv/bin/python eval/build_manifest.py        # redraw the test set after a round of the review
+```
