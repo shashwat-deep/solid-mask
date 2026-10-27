@@ -65,3 +65,5 @@ npm test            # builds app/, runs the unit tests, then the privacy suite i
 npm run test:unit   # unit tests only (Vitest, no browser)
 npm run typecheck
 ```
+
+CI (`.github/workflows/pages.yml`) runs `npm test` in `tests/` on every pull request and push to `main`; on `main` it then deploys the tested `app/dist` to GitHub Pages.
