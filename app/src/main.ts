@@ -1,6 +1,7 @@
-import { DETECTION } from './config.ts';
+import { DETECTION, PAD } from './config.ts';
 import { decode } from './pipeline/decode.ts';
 import { detectFaces, loadDetector } from './pipeline/detect.ts';
+import { drawMasks, maskFor, type Rect } from './pipeline/mask.ts';
 
 function element<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id);
@@ -17,14 +18,24 @@ function say(message: string): void {
   status.textContent = message;
 }
 
-/** Shows the photo at full size; CSS scales it to the screen. */
-function show(image: ImageBitmap): void {
+/**
+ * Draws the photo at full size with its blocks painted over it, in one go, so the uncovered photo
+ * is never on screen. CSS scales the canvas to the screen.
+ */
+function show(image: ImageBitmap, masks: Rect[]): void {
   canvas.width = image.width;
   canvas.height = image.height;
   const context = canvas.getContext('2d');
   if (!context) throw new Error('no 2D canvas');
   context.drawImage(image, 0, 0);
+  drawMasks(context, masks);
   canvas.hidden = false;
+}
+
+/** What to tell the person once the blocks are painted. Finding no face must not read like success. */
+function coverage(faces: number): string {
+  if (faces === 0) return 'No faces found, so nothing is covered. Check the whole photo.';
+  return `${faces === 1 ? 'Covered 1 face.' : `Covered ${faces} faces.`} Check the whole photo for faces it missed.`;
 }
 
 async function open(photo: File): Promise<void> {
@@ -32,14 +43,15 @@ async function open(photo: File): Promise<void> {
   say('Looking for faces…');
   try {
     const image = await decode(photo);
-    let found: number;
+    let masks: Rect[];
     try {
-      found = (await detectFaces(image, DETECTION)).length;
-      show(image);
+      const faces = await detectFaces(image, DETECTION);
+      masks = faces.map((face) => maskFor(face, PAD, image.width, image.height));
+      show(image, masks);
     } finally {
       image.close();
     }
-    say(found === 1 ? 'Found 1 face.' : `Found ${found} faces.`);
+    say(coverage(masks.length));
   } catch (error) {
     console.error(error);
     canvas.hidden = true;

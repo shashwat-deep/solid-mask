@@ -2,7 +2,7 @@
 
 ## Unit tests
 
-`unit/` tests the app's pure functions in Node with Vitest, without a browser: for now, the YuNet input tensor (resizing, letterboxing, channel order), the decoding of the model's outputs, and non-maximum suppression.
+`unit/` tests the app's pure functions in Node with Vitest, without a browser: the YuNet input tensor (resizing, letterboxing, channel order), the decoding of the model's outputs, non-maximum suppression, and the size and painting of the blocks.
 
 ## Privacy suite
 
