@@ -1,0 +1,26 @@
+{
+  "name": "solid-mask",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "fetch-model": "node scripts/fetch-model.ts",
+    "predev": "npm run fetch-model",
+    "dev": "vite",
+    "prebuild": "npm run fetch-model",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.node.json && vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2",
+    "vite": "8.3.5"
+  },
+  "dependencies": {
+    "onnxruntime-web": "1.30.0"
+  }
+}

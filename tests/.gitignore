@@ -1,0 +1,4 @@
+# Playwright output. Downloaded test photos live in fixtures/data/, which the root .gitignore covers.
+test-results/
+playwright-report/
+blob-report/
