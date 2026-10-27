@@ -93,11 +93,14 @@ def test_runner_makes_each_transform_and_score_reads_it(chromium, tmp_path):
     args = make_test_set(tmp_path) + ['--run-id', 't', '--transforms', 'none,rot0,rot45,rot90,dark2']
     run_detect.main(args)
     lines = [json.loads(line) for line in (tmp_path / 'out/t.jsonl').read_text().splitlines()][1:]
-    assert [(line['transform'], line['imageId']) for line in lines] == [
-        (t, i) for t in ('none', 'rot0', 'rot45', 'rot90', 'dark2') for i in ('r000', 'r090', 'r180', 'r270')]
+    assert [(line['imageId'], line['transform']) for line in lines] == [
+        (i, t) for i in ('r000', 'r090', 'r180', 'r270') for t in ('none', 'rot0', 'rot45', 'rot90', 'dark2')]
     info = json.loads((tmp_path / 'out/t.run_info.json').read_text())
     assert info['transforms'] == ['none', 'rot0', 'rot45', 'rot90', 'dark2']
     assert info['transformParameters']['darkening']['lambdaShot'] == pytest.approx(0.0010954, rel=1e-4)
+    run_detect.main(args[:6] + ['--run-id', 'u', '--transforms', 'none,rot0,rot45,rot90,dark2'])  # a rerun
+    again = json.loads((tmp_path / 'out/u.run_info.json').read_text())
+    assert again['servedSha256'] == info['servedSha256'] and again['boxesSha256'] == info['boxesSha256']
 
     score.main([str(tmp_path / 'out/t.jsonl'), '--pad', '0', '--threshold', '0.5', '--split', 'all',
                 '--manifest', str(tmp_path / 'manifest'), '--out', str(tmp_path / 'score.json')])

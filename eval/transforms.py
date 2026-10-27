@@ -90,13 +90,23 @@ def linear_to_srgb(v):
     return np.where(v <= 0.0031308, v * 12.92, 1.055 * np.power(v, 1 / 2.4) - 0.055)
 
 
+# darken() works through these two tables rather than calling the formulas for each pixel: each 8-bit value's linear
+# light, and the linear values at which the 8-bit sRGB value steps up (halfway between two values). An output
+# pixel then depends on comparisons with fixed numbers only, which keeps reruns identical.
+TO_LINEAR = srgb_to_linear(np.arange(256) / 255)
+STEPS = srgb_to_linear((np.arange(1, 256) - 0.5) / 255)
+
+
 def upright(path, rotation):
     """The stored image as Chromium shows it: converted to sRGB by its ICC profile (relative colorimetric
     intent), as RGB, and turned counterclockwise by Open Images' Rotation. Like Chromium, it applies an RGB profile
     to a greyscale image as if the image were RGB (14 greyscale test images carry one), and ignores a profile of
     another kind (one RGB test image carries a CMYK profile). On test images of each kind, the result is within 1
-    of Chromium's decoded pixels."""
+    of Chromium's decoded pixels. Images in other modes (CMYK, for example) have not been compared, so they are
+    refused."""
     with Image.open(path) as image:
+        if image.mode not in ('RGB', 'L'):
+            raise ValueError(f'{path}: {image.mode} images are not supported; check them with check_colour.py first')
         icc = image.info.get('icc_profile')
         if icc:
             profile = ImageCms.ImageCmsProfile(io.BytesIO(icc))
@@ -119,9 +129,9 @@ def rotate(image, degrees):
 
 
 def darken(image, ev, rng):
-    x = srgb_to_linear(np.asarray(image, dtype=np.float64) / 255) * 2.0 ** -ev
+    x = TO_LINEAR[np.asarray(image)] * 2.0 ** -ev
     y = rng.poisson(x / LAMBDA_SHOT) * LAMBDA_SHOT + rng.normal(0.0, math.sqrt(LAMBDA_READ), x.shape)
-    return Image.fromarray(np.round(linear_to_srgb(np.clip(y, 0, 1)) * 255).astype(np.uint8), 'RGB')
+    return Image.fromarray(np.searchsorted(STEPS, y, side='right').astype(np.uint8), 'RGB')  # clips to [0, 255]
 
 
 def apply(image, transform, image_id):

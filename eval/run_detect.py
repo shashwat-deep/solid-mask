@@ -22,9 +22,11 @@ eval/transforms.py just before the page asks for it, as a PNG, and keeps none of
 
 Writes <out>/<run-id>.jsonl (out is results/detections, or data/stub-runs for the stub, which is never written
 into results/): the run line, then one line per image with every box scoring 0.05 or more (docs/
-contracts.md, section 4). <out>/<run-id>.run_info.json records the versions, hashes, timings and boxesSha256, the
-SHA-256 of the lines after the run line, which two runs on the same versions must share. The lines come in the
-order of --transforms, then of the manifest. A run that stops early leaves only <run-id>.jsonl.part.
+contracts.md, section 4). <out>/<run-id>.run_info.json records the versions, hashes, timings, boxesSha256, the
+SHA-256 of the lines after the run line, which two runs on the same versions must share, and servedSha256, a
+SHA-256 over every image served, which tells whether two runs gave the page the same images. The lines follow the
+manifest, each image with its transforms in the order of --transforms. A run that stops early leaves only
+<run-id>.jsonl.part.
 """
 import argparse, datetime, hashlib, json, platform, statistics, subprocess, sys, time
 from importlib import metadata
@@ -93,14 +95,17 @@ def sha256(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def prepare(row, path, transform):
-    """(file name, content type, bytes, expected decoded size) of one manifest image under one transform."""
+def prepare(row, path, transform, upright=None):
+    """(file name, content type, bytes, expected decoded size) of one manifest image under one transform. upright
+    is transforms.upright() of the image, if already made."""
     width, height, rotation = int(row['width']), int(row['height']), int(row['rotation'])
     if transform == 'none':
         return (row['imageId'] + path.suffix, CONTENT_TYPES.get(path.suffix.lower()),
                 with_orientation(path.read_bytes(), rotation), (width, height))
     kind, value = transforms.parse(transform)
-    image = transforms.apply(transforms.upright(path, rotation), transform, row['imageId'])
+    if upright is None:
+        upright = transforms.upright(path, rotation)
+    image = transforms.apply(upright, transform, row['imageId'])
     expected = transforms.rotated_size(width, height, value) if kind == 'rot' else (width, height)
     return f'{row["imageId"]}.{transform}.png', 'image/png', transforms.png(image), expected
 
@@ -206,7 +211,7 @@ def main(argv=None):
         return request_route.continue_()
 
     from playwright.sync_api import sync_playwright
-    started, lines, times = datetime.datetime.now(datetime.timezone.utc), [], []
+    started, lines, times, served = datetime.datetime.now(datetime.timezone.utc), [], [], hashlib.sha256()
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
         try:
@@ -216,9 +221,12 @@ def main(argv=None):
             page.goto(page_url)
             page.wait_for_function('() => window.solidMask !== undefined', timeout=120_000)
             info = page.evaluate('() => window.solidMask.info()')
-            for transform in transform_list:
-                for row in rows:
-                    name, content_type, image, expected = prepare(row, files[row['imageId']], transform)
+            for row in rows:
+                path = files[row['imageId']]
+                upright = None if transform_list == ['none'] else transforms.upright(path, int(row['rotation']))
+                for transform in transform_list:
+                    name, content_type, image, expected = prepare(row, path, transform, upright)
+                    served.update(f'{name} {sha256(image)}\n'.encode())
                     pending.clear()
                     pending[name] = (content_type, image)
                     t0 = time.perf_counter()
@@ -252,7 +260,7 @@ def main(argv=None):
         'run': run_id, 'page': args.page, 'detectOptions': options, 'split': args.split, 'limit': args.limit,
         'transforms': transform_list, 'images': len(rows), 'boxes': sum(len(line['boxes']) for line in lines),
         'detectionsSha256': download.sha256_file(args.out / f'{run_id}.jsonl'),
-        'boxesSha256': sha256(body.encode()), 'manifestSha256': {
+        'boxesSha256': sha256(body.encode()), 'servedSha256': served.hexdigest(), 'manifestSha256': {
             name: download.sha256_file(args.manifest / name) for name in ('images.csv', 'faces.csv')},
         'pageInfo': info, 'started': started.isoformat(timespec='seconds'),
         'finished': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),

@@ -62,6 +62,8 @@ def main(argv=None):
         if name == 'index.html':
             return request_route.fulfill(status=200, content_type='text/html', body='<!doctype html><title>check</title>')
         i = name.rsplit('.', 1)[0]
+        if i not in files:
+            return request_route.fulfill(status=404)
         body = run_detect.with_orientation(files[i].read_bytes(), int(rows[i]['rotation']))
         return request_route.fulfill(status=200, content_type='image/jpeg', body=body)
 

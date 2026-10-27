@@ -83,6 +83,9 @@ def test_upright_converts_like_chromium(tmp_path):
         out = transforms.upright(tmp_path / name, 0)
         assert out.mode == 'RGB' and out.size == (50, 30)
         assert np.abs(np.asarray(out).astype(int) - decoded).max() <= 1, name
+    rgb.convert('CMYK').save(tmp_path / 'cmyk.jpg', 'JPEG')
+    with pytest.raises(ValueError, match='CMYK images are not supported'):
+        transforms.upright(tmp_path / 'cmyk.jpg', 0)
     turned = transforms.upright(tmp_path / 'plain.jpg', 90)
     assert turned.size == (30, 50)
     assert np.array_equal(np.asarray(turned), np.asarray(Image.open(tmp_path / 'plain.jpg').rotate(90, expand=True)))
