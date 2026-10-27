@@ -14,6 +14,7 @@ import argparse, html
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 import build_manifest
+import download
 
 ROOT = Path(__file__).resolve().parents[1]
 FACE, DEPICTION = (0, 255, 0), (255, 140, 0)
@@ -38,6 +39,7 @@ textarea {{ width: 100%; height: 12em; font: 12px monospace }}
 const rows = document.getElementById("rows"), reviewer = document.getElementById("reviewer");
 const cell = v => /[",\\n]/.test(v) ? '"' + v.replaceAll('"', '""') + '"' : v;
 function update() {{
+  if (!reviewer.value.trim()) {{ rows.value = "Type your name as reviewer first."; return; }}
   rows.value = [...document.querySelectorAll("select")].filter(s => s.value).map(s => {{
     const [decision, reason = ""] = s.value.split(":");
     return [s.dataset.id, decision, reason, reviewer.value.trim()].map(cell).join(",");
@@ -100,7 +102,8 @@ def main(argv=None):
         known = {r['imageId'] for r in images}
         if unknown := [i for i in args.ids if i not in known]:
             ap.error(f'not in {args.manifest / "images.csv"}: {", ".join(unknown)}')
-        chosen = [r for r in images if r['imageId'] in set(args.ids)]
+        wanted = set(args.ids)
+        chosen = [r for r in images if r['imageId'] in wanted]
     elif args.rotated:
         chosen = [r for r in images if r['rotation'] != '0']
     elif args.all:
@@ -112,7 +115,8 @@ def main(argv=None):
     args.out.mkdir(parents=True, exist_ok=True)
     for image in chosen:
         i = image['imageId']
-        draw(args.images / f'{i}.jpg', args.out / f'{i}.jpg', int(image['rotation']), faces.get(i, []))
+        draw(download.image_path(args.images, i, image['url']), args.out / f'{i}.jpg', int(image['rotation']),
+             faces.get(i, []))
     figures = '\n'.join(figure(r, len(faces.get(r['imageId'], [])), review.get(r['imageId'])) for r in chosen)
     (args.out / 'index.html').write_text(PAGE.format(count=len(chosen), figures=figures), encoding='utf-8')
     print(f'{len(chosen)} images: open {args.out / "index.html"} in a browser')

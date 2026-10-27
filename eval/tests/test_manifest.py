@@ -70,6 +70,10 @@ def test_read_review_checks_every_row(tmp_path):
         bm.write_csv(path, bm.REVIEW_COLUMNS, good + [{**good[1], 'imageId': 'c', **bad}])
         with pytest.raises(SystemExit):
             bm.read_review(path)
+    bm.write_csv(path, ['imageId', 'decision', 'Reason', 'reviewer'], [])
+    path.write_text(path.read_text() + 'a,keep,,S\n')
+    with pytest.raises(SystemExit, match='the columns must be'):
+        bm.read_review(path)
 
 
 def test_fetch_keeps_a_good_copy_and_replaces_a_damaged_one(site, tmp_path):
@@ -80,6 +84,8 @@ def test_fetch_keeps_a_good_copy_and_replaces_a_damaged_one(site, tmp_path):
     assert download.fetch(f'{base}/a.jpg', dest, good) == good and len(requested) == 1
     dest.write_bytes(b'abd')
     assert download.fetch(f'{base}/a.jpg', dest, good) == good and dest.read_bytes() == b'abc'
+    dest.write_bytes(b'abd')  # without a SHA-256 to check against, a file already there is not trusted
+    assert download.fetch(f'{base}/a.jpg', dest) == good and dest.read_bytes() == b'abc'
     with pytest.raises(ValueError):
         download.fetch(f'{base}/a.jpg', tmp_path / 'out/b.jpg', '0' * 64)
     assert not (tmp_path / 'out/b.jpg').exists() and not (tmp_path / 'out/b.jpg.part').exists()
@@ -100,6 +106,9 @@ def test_download_lists_every_failure(site, tmp_path, capsys):
     err = capsys.readouterr().err
     assert '  b: ValueError' in err and '  c: HTTPError' in err
     assert (tmp_path / 'out/a.jpg').read_bytes() == b'abc'
+    bm.write_csv(tmp_path / 'images.csv', ['imageId', 'url', 'sha256'], rows[:1] * 2)
+    with pytest.raises(SystemExit, match='more than once'):
+        download.main([str(tmp_path / 'images.csv'), '--out', str(tmp_path / 'out')])
 
 
 def make_open_images(base, folder, n=40):

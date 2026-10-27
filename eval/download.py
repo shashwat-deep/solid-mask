@@ -26,15 +26,14 @@ def sha256_file(path):
 def fetch(url, dest, sha256=None, tries=3, timeout=60):
     """Make dest a copy of url and return its SHA-256.
 
-    An existing file is kept when sha256 is None or matches. A download is written to dest + '.part' and renamed,
-    so an interrupted download never leaves a partial file at dest. Raises ValueError when the downloaded file's
-    SHA-256 differs from sha256, and OSError or http.client.HTTPException when all tries fail (OSError at once on
-    HTTP 404)."""
+    An existing file is kept only when its SHA-256 matches sha256; with sha256=None the file is always downloaded.
+    A download is written to dest + '.part' and renamed, so an interrupted download never leaves a partial file at
+    dest. Raises ValueError when the downloaded file's SHA-256 differs from sha256, and OSError or
+    http.client.HTTPException when all tries fail (OSError at once on HTTP 403 or 404, which S3 and other servers
+    give for a missing file)."""
     dest = Path(dest)
-    if dest.exists():
-        got = sha256_file(dest)
-        if sha256 is None or got == sha256:
-            return got
+    if sha256 is not None and dest.exists() and sha256_file(dest) == sha256:
+        return sha256
     request = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
     for attempt in range(tries):
         try:
@@ -42,7 +41,7 @@ def fetch(url, dest, sha256=None, tries=3, timeout=60):
                 data = response.read()
             break
         except (OSError, http.client.HTTPException) as e:
-            if attempt == tries - 1 or (isinstance(e, urllib.error.HTTPError) and e.code == 404):
+            if attempt == tries - 1 or (isinstance(e, urllib.error.HTTPError) and e.code in (403, 404)):
                 raise
             time.sleep(2 ** attempt)
     got = hashlib.sha256(data).hexdigest()
@@ -83,6 +82,8 @@ def main(argv=None):
     missing = [r['imageId'] for r in rows if not r['sha256']]
     if missing:
         sys.exit(f'{args.manifest} has no SHA-256 for {len(missing)} images, for example {missing[0]}')
+    if len({r['imageId'] for r in rows}) < len(rows):
+        sys.exit(f'{args.manifest} lists an imageId more than once')
     done, failed = fetch_all([(r['imageId'], r['url'], image_path(args.out, r['imageId'], r['url']), r['sha256'])
                               for r in rows], args.jobs)
     print(f'{len(done)} of {len(rows)} images in {args.out} match the SHA-256s in {args.manifest}')

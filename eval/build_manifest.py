@@ -102,8 +102,10 @@ def eligible(boxes, info):
 
 def read_review(path):
     """{imageId: 'keep' or 'remove'} from review.csv, after checking every row."""
-    review = {}
-    for line, row in enumerate(read_csv(path) if path.exists() else [], start=2):
+    review, rows = {}, read_csv(path) if path.exists() else []
+    if rows and list(rows[0]) != REVIEW_COLUMNS:
+        sys.exit(f'{path}: the columns must be {",".join(REVIEW_COLUMNS)}')
+    for line, row in enumerate(rows, start=2):
         valid = ((row['decision'] == 'keep' and not row['reason']) or
                  (row['decision'] == 'remove' and row['reason'] in REASONS))
         if not valid or not row['reviewer'] or row['imageId'] in review:
@@ -165,15 +167,15 @@ def main(argv=None):
     old_faces = args.manifest / 'faces.csv'
     old_yaw = {(r['imageId'], r['faceId']): r['yaw'] for r in read_csv(old_faces)} if old_faces.exists() else {}
     url = {i: CVDF.format(subset=info[i]['Subset'], image_id=i) for i, _ in chosen}
-    sha, failed = download.fetch_all([(i, url[i], args.images / f'{i}.jpg', old_sha.get(i)) for i, _ in chosen],
-                                     args.jobs)
+    path = {i: download.image_path(args.images, i, url[i]) for i, _ in chosen}
+    sha, failed = download.fetch_all([(i, url[i], path[i], old_sha.get(i)) for i, _ in chosen], args.jobs)
     if failed:
         sys.exit('\n'.join(f'{i}: {error}' for i, error in sorted(failed.items())))
 
     image_rows, face_rows = [], []
     for i, split in sorted(chosen):
         meta, rotation = info[i], ROTATIONS[info[i]['Rotation']]
-        with Image.open(args.images / f'{i}.jpg') as im:
+        with Image.open(path[i]) as im:
             im.load()  # decodes the whole file, so a damaged image stops the script here
             width, height = im.size if rotation in (0, 180) else im.size[::-1]
         image_rows.append({
