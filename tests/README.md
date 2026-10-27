@@ -36,3 +36,7 @@ npm test
 ```
 
 `npm test` first builds `app/` (run `npm ci` there once), then runs the unit tests and the privacy suite. `npm run test:unit` runs the unit tests alone, and `npm run typecheck` checks the types.
+
+## Continuous integration
+
+`.github/workflows/pages.yml` runs `npm test` on every pull request and every push to `main`, on Ubuntu. On `main` it then deploys `app/dist` to GitHub Pages: exactly the build the suite has just tested, so a build that breaks a promise is never deployed.
