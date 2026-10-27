@@ -10,6 +10,8 @@ The scripts here measure how often the tool leaves a face uncovered, following [
 - `build_manifest.py`: draws the test set from Open Images V7 and writes the two manifests.
 - `download.py`: downloads the images and checks their SHA-256s.
 - `review_sheet.py`: makes a page on your computer that shows the images upright with their face boxes, for the review and the rotation check.
+- `run_detect.py`: runs the detector on the test images in headless Chromium, through the app's eval page, and writes a detections file.
+- `stub/`: a stand-in for the app's eval page with the same interface, used until that page exists and by the tests.
 - `score.py`: scores a detections file against the manifest: missed faces, faces covered completely, detection recall and false masks, each with a 95% confidence interval, and the operating point.
 - `transforms.py`: the rotation and darkening transforms. So far it holds the geometry of a rotation, which `score.py` uses.
 - `tests/`: tests for these scripts (pytest).
@@ -28,6 +30,20 @@ uv pip sync --python .venv/bin/python eval/requirements.txt
 ```
 
 `download.py` fetches the 1,000 images, about 290 MB, into `data/openimages/images/` and stops with an error if any file differs from its SHA-256 in the manifest.
+
+## Detection runs
+
+`run_detect.py` opens the app's eval page (`app/eval.html`, [`docs/contracts.md`](../docs/contracts.md), section 3) in headless Chromium with Playwright and calls the page's own decoding and detection for every image, so the numbers come from the code the app ships:
+
+```bash
+.venv/bin/python -m playwright install --only-shell chromium
+.venv/bin/python eval/run_detect.py --page http://localhost:5173/eval.html
+.venv/bin/python eval/run_detect.py --page http://localhost:5173/eval.html --tiles 1920,0.25
+```
+
+The app's eval page does not exist yet. Until it does, the default `--page stub` uses `stub/`, which has the same interface but whose "detector" only finds solid magenta rectangles; the tests draw their made-up faces that way.
+
+The runner gives each image to the page itself, on the page's own address, so nothing is sent anywhere, and it stops the run if the page asks for anything from another site. Open Images stores a few images turned; the runner adds an EXIF orientation tag to those, so the app's decoding turns them upright as it would a phone photo, and it checks every decoded size against the manifest. Each run writes `results/detections/<run-id>.jsonl` (section 4 of the contract) and `<run-id>.run_info.json`, with the versions, hashes and timings. Two runs with the same versions must give the same `boxesSha256`, the SHA-256 of every line after the run line.
 
 ## Scoring
 

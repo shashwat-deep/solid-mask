@@ -1,13 +1,19 @@
 # Python packages for the scripts and tests in eval/, all pinned. Install into a fresh environment with Python 3.13:
 #   uv venv --python 3.13 .venv
 #   uv pip sync --python .venv/bin/python eval/requirements.txt
+#   .venv/bin/python -m playwright install --only-shell chromium     (Chromium for run_detect.py)
 # None of these is shipped with the app. Licences: numpy BSD-3-Clause (bundled parts 0BSD, MIT, Zlib, CC0-1.0);
-# pillow MIT-CMU; pytest, iniconfig and pluggy MIT; packaging Apache-2.0 or BSD-2-Clause; pygments BSD-2-Clause.
+# pillow MIT-CMU; pytest, iniconfig and pluggy MIT; packaging Apache-2.0 or BSD-2-Clause; pygments BSD-2-Clause;
+# playwright Apache-2.0; greenlet MIT and PSF-2.0; pyee MIT; typing-extensions PSF-2.0.
 
+greenlet==3.5.6
 iniconfig==2.3.1
 numpy==2.5.4
 packaging==26.3
 pillow==13.0.0
+playwright==1.64.1
 pluggy==1.7.0
+pyee==14.0.0
 pygments==2.21.0
 pytest==9.1.1
+typing-extensions==4.16.0

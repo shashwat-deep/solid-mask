@@ -1,0 +1,220 @@
+"""Run the face detector on the test images in headless Chromium and write a detections file.
+
+    python eval/run_detect.py [--page stub | --page URL] [--split report] [--limit N] [--tiles 1920,0.25]
+
+Follows docs/contracts.md, sections 3 and 4. Playwright opens the eval page in headless Chromium and calls its
+window.solidMask.decode() and detectFaces() for each image, so the boxes come from the shipped decoding,
+preprocessing and inference. --page takes the address of the app's eval page (app/eval.html, served by the app's
+development server). Until that page exists, the default, --page stub, uses eval/stub/: a stand-in with the same
+interface whose "detector" finds solid magenta rectangles, for testing this script.
+
+The runner serves each test image to the page itself, from data/, on the page's own origin under /__eval__/images/,
+so the page's content security policy (connect-src 'self') allows the fetch. Every request to another origin is
+refused, and the run stops. An image that Open Images stores turned (Rotation 90, 180 or 270) is served with an
+EXIF orientation tag added, so the page's createImageBitmap(..., {imageOrientation: "from-image"}) turns it upright
+as it does a phone photo; the runner checks each decoded size against the upright size in the manifest. Before it
+starts, it checks every image file against its SHA-256 in the manifest.
+
+Writes <out>/<run-id>.jsonl: the run line, then one line per image with every box scoring 0.05 or more (docs/
+contracts.md, section 4). <out>/<run-id>.run_info.json records the versions, hashes, timings and boxesSha256, the
+SHA-256 of the lines after the run line, which two runs on the same versions must share. A run that stops early
+leaves only <run-id>.jsonl.part. Only the transform "none" is supported so far.
+"""
+import argparse, datetime, hashlib, json, platform, statistics, subprocess, sys, time
+from importlib import metadata
+from pathlib import Path
+from urllib.parse import urlsplit
+import build_manifest
+import download
+
+ROOT = Path(__file__).resolve().parents[1]
+STUB = Path(__file__).resolve().parent / 'stub'
+STUB_ORIGIN = 'http://eval.localhost'
+IMAGE_PATH = '/__eval__/images/'
+RUNNER_THRESHOLD = 0.05                              # docs/contracts.md, section 1
+NMS_IOU = {'yunet': 0.3, 'yolo5face': 0.5}           # OpenCV's default for YuNet; yolov5-face's default
+EXIF_ORIENTATION = {90: 8, 180: 3, 270: 6}           # Open Images' counterclockwise Rotation -> EXIF Orientation
+CONTENT_TYPES = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png'}
+DETECT = """async ({url, options}) => {
+  const bitmap = await window.solidMask.decode(url);
+  try {
+    const boxes = await window.solidMask.detectFaces(bitmap, options);
+    return {width: bitmap.width, height: bitmap.height, boxes: boxes.map(b => [b.x, b.y, b.w, b.h, b.score])};
+  } finally {
+    bitmap.close();
+  }
+}"""
+
+
+def with_orientation(jpeg, rotation):
+    """The JPEG with an EXIF segment holding only the Orientation tag that turns it counterclockwise by rotation.
+
+    The segment goes after the start of the file and the JFIF segment, if there is one. A JPEG that already has
+    EXIF data is refused, since it could hold an orientation of its own."""
+    if rotation == 0:
+        return jpeg
+    if jpeg[:2] != b'\xff\xd8':
+        raise ValueError('not a JPEG file')
+    at, insert_at = 2, 2
+    while jpeg[at] == 0xFF and jpeg[at + 1] not in (0xDA, 0xD9):  # the segments before the image data
+        length = int.from_bytes(jpeg[at + 2:at + 4], 'big')
+        if jpeg[at + 1] == 0xE1 and jpeg[at + 4:at + 10] == b'Exif\x00\x00':
+            raise ValueError('the JPEG already has EXIF data')
+        if jpeg[at + 1] == 0xE0 and at == 2:
+            insert_at = at + 2 + length
+        at += 2 + length
+    tiff = (b'MM\x00\x2a\x00\x00\x00\x08'                    # big-endian TIFF header, first directory at byte 8
+            b'\x00\x01'                                      # one entry:
+            b'\x01\x12\x00\x03\x00\x00\x00\x01'              # tag 0x0112 Orientation, type SHORT, count 1,
+            + EXIF_ORIENTATION[rotation].to_bytes(2, 'big') + b'\x00\x00'   # value, padding
+            + b'\x00\x00\x00\x00')                           # no further directory
+    payload = b'Exif\x00\x00' + tiff
+    return jpeg[:insert_at] + b'\xff\xe1' + (len(payload) + 2).to_bytes(2, 'big') + payload + jpeg[insert_at:]
+
+
+def sha256(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def git_commit():
+    try:
+        commit = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=ROOT, capture_output=True, text=True,
+                                check=True).stdout.strip()
+        dirty = subprocess.run(['git', 'status', '--porcelain', '--', 'eval'], cwd=ROOT, capture_output=True,
+                               text=True, check=True).stdout.strip()
+        return commit + (' with uncommitted changes in eval/' if dirty else '')
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument('--page', default='stub', help='"stub" or the URL of the app\'s eval page')
+    ap.add_argument('--model', choices=sorted(NMS_IOU), default='yunet')
+    ap.add_argument('--input-size', type=int, default=640)
+    ap.add_argument('--tiles', metavar='LONG_SIDE,OVERLAP', help='the tiled setting, for example 1920,0.25')
+    ap.add_argument('--nms-iou', type=float, help='default: 0.3 for yunet, 0.5 for yolo5face')
+    ap.add_argument('--split', choices=('tune', 'report', 'all'), default='all')
+    ap.add_argument('--limit', type=int, help='only the first N images of the split, in manifest order')
+    ap.add_argument('--manifest', type=Path, default=ROOT / 'eval/manifest')
+    ap.add_argument('--images', type=Path, default=ROOT / 'data/openimages/images')
+    ap.add_argument('--out', type=Path, default=ROOT / 'results/detections')
+    ap.add_argument('--run-id', help='default: <date>-<stub or app>-<model>-<input size>-<setting>')
+    args = ap.parse_args(argv)
+
+    stub = args.page == 'stub'
+    page_url = f'{STUB_ORIGIN}/index.html' if stub else args.page
+    parts = urlsplit(page_url)
+    if parts.scheme not in ('http', 'https') or not parts.netloc:
+        ap.error('--page must be "stub" or an http(s) URL')
+    origin = f'{parts.scheme}://{parts.netloc}'
+    if args.tiles:
+        long_side, overlap = args.tiles.split(',')
+        tiling = {'kind': 'tiles', 'longSide': int(long_side), 'overlap': float(overlap)}
+    else:
+        tiling = {'kind': 'none'}
+    nms_iou = args.nms_iou if args.nms_iou is not None else NMS_IOU[args.model]
+    options = {'model': args.model, 'inputSize': args.input_size, 'tiling': tiling,
+               'scoreThreshold': RUNNER_THRESHOLD, 'nmsIoU': nms_iou}
+
+    rows = [r for r in build_manifest.read_csv(args.manifest / 'images.csv')
+            if args.split == 'all' or r['split'] == args.split][:args.limit]
+    files = {r['imageId']: download.image_path(args.images, r['imageId'], r['url']) for r in rows}
+    bad = [r['imageId'] for r in rows
+           if not files[r['imageId']].exists() or download.sha256_file(files[r['imageId']]) != r['sha256']]
+    if bad:
+        sys.exit(f'{len(bad)} images are missing or differ from the manifest, for example {bad[0]}; '
+                 f'run eval/download.py')
+    names = {r['imageId']: r['imageId'] + files[r['imageId']].suffix for r in rows}
+    served = {names[r['imageId']]: r for r in rows}
+
+    setting = 'single' if tiling['kind'] == 'none' else f'tiles{tiling["longSide"]}-{tiling["overlap"]}'
+    run_id = args.run_id or (f'{datetime.date.today().isoformat()}-{"stub" if stub else "app"}-{args.model}-'
+                             f'{args.input_size}-{setting}')
+    if not args.run_id:
+        n = 1
+        while (args.out / f'{run_id}{f"-{n}" if n > 1 else ""}.jsonl').exists():
+            n += 1
+        run_id += f'-{n}' if n > 1 else ''
+    elif (args.out / f'{run_id}.jsonl').exists():
+        sys.exit(f'{args.out / run_id}.jsonl exists; every run is kept, so choose another --run-id')
+
+    blocked = []
+
+    def route(request_route):
+        url = request_route.request.url
+        here = urlsplit(url)
+        if f'{here.scheme}://{here.netloc}' != origin:
+            blocked.append(url)
+            return request_route.abort('blockedbyclient')
+        if here.path.startswith(IMAGE_PATH):
+            row = served.get(here.path[len(IMAGE_PATH):])
+            if row is None:
+                return request_route.fulfill(status=404)
+            path = files[row['imageId']]
+            return request_route.fulfill(status=200, content_type=CONTENT_TYPES.get(path.suffix.lower()),
+                                         body=with_orientation(path.read_bytes(), int(row['rotation'])))
+        if stub:
+            file = STUB / here.path.lstrip('/')
+            if file.parent != STUB or not file.is_file():
+                return request_route.fulfill(status=404)
+            return request_route.fulfill(path=file)
+        return request_route.continue_()
+
+    from playwright.sync_api import sync_playwright
+    started, lines, times = datetime.datetime.now(datetime.timezone.utc), [], []
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        try:
+            context = browser.new_context()
+            context.route('**/*', route)
+            page = context.new_page()
+            page.goto(page_url)
+            page.wait_for_function('() => window.solidMask !== undefined', timeout=120_000)
+            info = page.evaluate('() => window.solidMask.info()')
+            for row in rows:
+                t0 = time.perf_counter()
+                url = f'{origin}{IMAGE_PATH}{names[row["imageId"]]}'
+                result = page.evaluate(DETECT, {'url': url, 'options': options})
+                times.append(1000 * (time.perf_counter() - t0))
+                if blocked:
+                    sys.exit(f'the page asked for another origin, so the run stops: {blocked[0]}')
+                if (result['width'], result['height']) != (int(row['width']), int(row['height'])):
+                    sys.exit(f'{row["imageId"]} decoded at {result["width"]} x {result["height"]}, but the manifest '
+                             f'says the upright image is {row["width"]} x {row["height"]}')
+                lines.append({'imageId': row['imageId'], 'transform': 'none', 'inputSize': args.input_size,
+                              'tiling': tiling, 'boxes': result['boxes']})
+            browser_version = browser.version
+        finally:
+            browser.close()
+    if blocked:
+        sys.exit(f'the page asked for another origin, so the run stops: {blocked[0]}')
+
+    model_sha = sha256((STUB / 'solid-mask-stub.js').read_bytes()) if stub else info['modelSha256']
+    manifest_sha = download.sha256_file(args.manifest / 'images.csv')
+    run_line = {'run': run_id, 'model': args.model, 'modelSha256': model_sha, 'ortVersion': info['ortVersion'],
+                'backend': info['backend'], 'threads': info['threads'], 'nmsIoU': nms_iou,
+                'browser': f'Chromium {browser_version} (headless)', 'manifestSha256': manifest_sha}
+    body = ''.join(json.dumps(line) + '\n' for line in lines)
+    args.out.mkdir(parents=True, exist_ok=True)
+    part = args.out / f'{run_id}.jsonl.part'
+    part.write_text(json.dumps(run_line) + '\n' + body, encoding='utf-8')
+    part.replace(args.out / f'{run_id}.jsonl')
+    run_info = {
+        'run': run_id, 'page': args.page, 'detectOptions': options, 'split': args.split, 'limit': args.limit,
+        'images': len(rows), 'boxes': sum(len(line['boxes']) for line in lines),
+        'detectionsSha256': download.sha256_file(args.out / f'{run_id}.jsonl'),
+        'boxesSha256': sha256(body.encode()), 'manifestSha256': {
+            name: download.sha256_file(args.manifest / name) for name in ('images.csv', 'faces.csv')},
+        'pageInfo': info, 'started': started.isoformat(timespec='seconds'),
+        'finished': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
+        'msPerImage': {'median': round(statistics.median(times), 1), 'max': round(max(times), 1)} if times else None,
+        'gitCommit': git_commit(), 'python': platform.python_version(), 'platform': platform.platform(),
+        'playwright': metadata.version('playwright'), 'browser': browser_version,
+    }
+    (args.out / f'{run_id}.run_info.json').write_text(json.dumps(run_info, indent=1) + '\n', encoding='utf-8')
+    print(f'{len(rows)} images, {run_info["boxes"]} boxes: {args.out / run_id}.jsonl')
+
+
+if __name__ == '__main__':
+    main()
