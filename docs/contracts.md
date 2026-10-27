@@ -1,6 +1,8 @@
 # Contracts
 
-Version 0.1, draft for M0. The app and the evaluation both depend on what is written here. Change it only through a PR that both authors approve, and raise the version number.
+Version 0.2. The app and the evaluation both depend on what is written here. Change it only through a PR that both authors approve, and raise the version number.
+
+Changes: 0.1 was the draft merged at M0. 0.2 rounds each mask outward to whole pixels (section 2).
 
 ## 1. Face detection
 
@@ -38,7 +40,7 @@ export function detectFaces(image: ImageBitmap, options: DetectOptions): Promise
 
 ## 2. Masks and the saved file
 
-- A mask is a box grown by `pad × w` on the left and on the right and by `pad × h` at the top and at the bottom, then clipped to the image. The evaluation sets `pad` (`docs/eval-protocol.md`, part B); the app keeps it in `app/src/config.ts`.
+- A mask is a box grown by `pad × w` on the left and on the right and by `pad × h` at the top and at the bottom, then rounded outward to whole pixels (left and top edges down with `Math.floor`, right and bottom edges up with `Math.ceil`) and clipped to the image. The rounding means every pixel the mask touches is painted completely; a canvas fills a rectangle with fractional edges by blending the edge pixels with what lies under them. `eval/score.py` counts the same pixels. The evaluation sets `pad` (`docs/eval-protocol.md`, part B); the app keeps it in `app/src/config.ts`.
 - A mask is a filled rectangle in `#000000` with alpha 1, drawn on the full-resolution canvas before encoding. Masks the user adds by hand follow the same rule, without padding.
 - The saved file is a JPEG encoded from that canvas at quality 0.92 and named `masked-N.jpg`, where N counts from 1 within a session.
 

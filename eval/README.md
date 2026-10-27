@@ -10,6 +10,8 @@ The scripts here measure how often the tool leaves a face uncovered, following [
 - `build_manifest.py`: draws the test set from Open Images V7 and writes the two manifests.
 - `download.py`: downloads the images and checks their SHA-256s.
 - `review_sheet.py`: makes a page on your computer that shows the images upright with their face boxes, for the review and the rotation check.
+- `score.py`: scores a detections file against the manifest: missed faces, faces covered completely, detection recall and false masks, each with a 95% confidence interval, and the operating point.
+- `transforms.py`: the rotation and darkening transforms. So far it holds the geometry of a rotation, which `score.py` uses.
 - `tests/`: tests for these scripts (pytest).
 
 The columns follow [`docs/contracts.md`](../docs/contracts.md), section 6.
@@ -26,6 +28,17 @@ uv pip sync --python .venv/bin/python eval/requirements.txt
 ```
 
 `download.py` fetches the 1,000 images, about 290 MB, into `data/openimages/images/` and stops with an error if any file differs from its SHA-256 in the manifest.
+
+## Scoring
+
+`score.py` reads a detections file in the format of [`docs/contracts.md`](../docs/contracts.md), section 4, and applies the padding and the score threshold itself, so trying other values needs no new run:
+
+```bash
+.venv/bin/python eval/score.py results/detections/<run-id>.jsonl --operating-point
+.venv/bin/python eval/score.py results/detections/<run-id>.jsonl --pad 0.10 --threshold 0.50 --split report
+```
+
+The first finds the padding and threshold on the tune split by the protocol's rule; the second scores the report split at those values. Each transform and setting in the file is scored on its own. A mask covers whole pixels, rounded outward as the app paints it, and a face's covered share is computed exactly from those pixels, so a face turned by a rotation transform needs no special case. The summary is JSON (`--out`); `--faces` also writes one row per face for further breakdowns.
 
 ## How the test set is drawn
 

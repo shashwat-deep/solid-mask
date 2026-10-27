@@ -25,17 +25,18 @@ Draft for M0. Owner: Shashwat Deep; reviewer: Pratyush. Both authors agreed on e
 
 ### Definitions
 
-- Mask: a detected box grown by `pad` and clipped to the image (`docs/contracts.md`, §2).
-- Protected face: the union of masks covers at least 90% of the face's annotated box. Coverage is computed on rasterised masks at the image's resolution, which also handles rotated boxes.
-- Missed face: a face that is not protected. Miss rate = missed faces / all faces.
-- Also reported: the share of faces covered completely, and the share matched by a detected box at IoU ≥ 0.5, the usual detection recall, for comparison with published results.
-- False mask: a mask with IoU below 0.1 against every annotated face. Reported per image.
-- Uncertainty: 95% confidence intervals from a bootstrap over images, since faces in the same photo are not independent; 10,000 resamples, seed 0.
+- Mask: a detected box with a score at or above the threshold, grown by `pad`, rounded outward to whole pixels and clipped to the image (`docs/contracts.md`, §2): the pixels the app paints.
+- Protected face: the union of masks covers at least 90% of the face's annotated box. Coverage is computed on rasterised masks at the image's resolution, which also handles rotated boxes: the share of the face's box, or of its rotated quadrilateral, that lies inside the masks' pixels, computed exactly.
+- Missed face: a face that is not protected. Miss rate = missed faces / all faces. Depictions are counted on their own (Breakdowns).
+- Also reported: the share of faces covered completely, and the share matched by a detected box at IoU ≥ 0.5, the usual detection recall, for comparison with published results. For this match the boxes are taken before padding and clipped to the image, in order of score, and each box matches at most one face, the unmatched face it overlaps most.
+- False mask: a mask with IoU below 0.1 against every annotated face, depictions included. Reported per image.
+- Uncertainty: 95% confidence intervals from a bootstrap over images, since faces in the same photo are not independent; 10,000 resamples of the images, drawn with numpy's `default_rng(0)`, the same resamples for every value from one run and setting; the interval runs from the 2.5th to the 97.5th percentile.
 
 ### Operating point, set on the tune split
 
 - Padding: the smallest `pad`, in steps of 0.05, at which at least 99% of the faces found at IoU ≥ 0.5 are covered completely.
 - Score threshold: the lowest threshold at which false masks stay at or below 0.25 per image. A false mask costs the user one tap, while a missed face can cost them their privacy, so the rule favours finding faces.
+- The two are set together, for each detector and setting, on the tune images without a transform. For each threshold from 0.05 to 0.99 in steps of 0.01, the padding is the smallest `pad` from 0 to 1 that meets the padding rule at that threshold, counting faces that are not depictions. The operating point is the lowest threshold whose false masks, with its padding, meet the threshold rule. `eval/score.py --operating-point` applies this.
 
 ### Settings compared
 
