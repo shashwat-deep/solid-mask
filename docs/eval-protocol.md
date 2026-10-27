@@ -1,0 +1,91 @@
+# Evaluation protocol
+
+Draft for M0. Owner: Shashwat Deep; reviewer: Pratyush. Both authors agreed on every value below on 27 October 2026. Everything here is fixed before the first evaluation run. Any later change goes into the paper's list of deviations from the protocol, with its reason.
+
+## A. Questions
+
+1. How often does the tool leave a face uncovered, and how does that change with face size, angle, occlusion and light?
+2. Which detector should version 1 ship, YuNet or YOLO5Face-n?
+3. How many seconds does a photo take in phone browsers, and how much slower is the browser than native code on the same machine?
+4. Does a saved file keep anything beyond the visible, covered picture that could identify the person? (threat model, checks E1 to E3)
+
+## B. Missed faces
+
+### Data
+
+- Source: Open Images V7, validation and test splits: images with at least one "Human face" box (label `/m/0dzct`). The annotations are under CC BY 4.0. Open Images lists the images as CC BY 2.0; each image's licence, author and title are copied from Open Images' image metadata into the manifest (`docs/contracts.md`, §6).
+- Exclusions: images with any face box marked IsGroupOf (the faces inside are not boxed one by one), and images removed in the review below.
+- Review: one author looks at every sampled image before any detector runs on it, and removes it if it is intimate or sexual, if there is any doubt about that, or if a visible face has no box. The other author checks a random 10% of the decisions. Removals are logged with a reason code and no description of the image.
+- Size: about 1,000 images and 2,000 faces after review, sampled at random with a fixed seed.
+- Split: 20% of the images form the tune split, used only to set the padding, the score threshold and the bake-off decision. The other 80% form the report split, which gives every number in the paper.
+- Before scoring, check on at least 10 images that the boxes line up with the faces once the Rotation column is applied.
+- Frozen at M2: the manifest and the SHA-256 of every image are committed, and nothing is added or removed afterwards.
+
+### Definitions
+
+- Mask: a detected box grown by `pad` and clipped to the image (`docs/contracts.md`, §2).
+- Protected face: the union of masks covers at least 90% of the face's annotated box. Coverage is computed on rasterised masks at the image's resolution, which also handles rotated boxes.
+- Missed face: a face that is not protected. Miss rate = missed faces / all faces.
+- Also reported: the share of faces covered completely, and the share matched by a detected box at IoU ≥ 0.5, the usual detection recall, for comparison with published results.
+- False mask: a mask with IoU below 0.1 against every annotated face. Reported per image.
+- Uncertainty: 95% confidence intervals from a bootstrap over images, since faces in the same photo are not independent; 10,000 resamples, seed 0.
+
+### Operating point, set on the tune split
+
+- Padding: the smallest `pad`, in steps of 0.05, at which at least 99% of the faces found at IoU ≥ 0.5 are covered completely.
+- Score threshold: the lowest threshold at which false masks stay at or below 0.25 per image. A false mask costs the user one tap, while a missed face can cost them their privacy, so the rule favours finding faces.
+
+### Settings compared
+
+- single: the whole image, resized so its long side is 640 px; one pass.
+- tiled: the image resized so its long side is 1,920 px (smaller images are not enlarged), cut into 640 px tiles that overlap by 25%, with boxes merged by NMS.
+
+### Breakdowns
+
+Each is reported as a miss rate with its 95% CI on the report split.
+
+- Face size: face height as a share of the image's long side: under 2%, 2 to 5%, 5 to 10%, 10 to 25%, 25% and over. In the single setting, 2% is about 13 px at the detector's input.
+- Occlusion and truncation: Open Images' IsOccluded and IsTruncated flags.
+- Depictions (faces on posters, paintings or statues, flagged IsDepiction): reported separately and left out of the headline rate.
+- Yaw, the face's turn away from the camera: a random sample of 600 faces from the report split, each labelled frontal (both eyes visible, face mostly towards the camera), three-quarter (both eyes visible, face clearly turned), profile (one eye or none visible) or unclear. Both authors label independently, from face crops shown without any detector output. We report Cohen's κ, then settle disagreements together. Unclear faces are left out of this breakdown.
+- In-plane rotation: every report-split image rotated by 0°, 15°, 30°, 45°, 90°, 135° and 180° on a canvas enlarged to fit, with the annotated boxes rotated as polygons.
+- Light, synthetic: every report-split image darkened by 1, 2, 3 and 4 EV: converted to linear RGB, scaled by 2^−EV, given Poisson–Gaussian noise whose parameters are fixed in `eval/transforms.py` before the first run, and converted back to 8-bit sRGB.
+- Light, measured: the darkest tenth of faces by mean luma inside the box, against the rest.
+- Light, real: about 40 photos of the two authors taken in dim light, with the light level read in lux from a phone light-meter app and the faces boxed by both authors. With two people and few faces, this is reported as counts, as a check on the synthetic results, without confidence intervals.
+
+## C. Bake-off, at M2, on the tune split
+
+- Candidates: YuNet (`face_detection_yunet_2023mar.onnx` from the OpenCV Zoo, MIT) and YOLO5Face-n (exported to ONNX from deepcam-cn/yolov5-face, GPL-3.0, and kept out of the repo). Each runs at its own operating point, in both settings.
+- Speed target: a median of at most 2 s per 12 MP photo, after the first photo, on the slowest phone in the bench (part D).
+- Rule: among the detector-and-setting pairs that meet the speed target, ship the one that protects the most faces on the tune split. If YuNet comes within 1 percentage point of the best, ship YuNet, which is MIT-licensed and a smaller download. If no pair meets the target, ship the fastest pair and report the shortfall as a limitation.
+- If YOLO5Face-n is chosen, the code moves to GPL-3.0 before the model is served.
+
+## D. Speed
+
+- Bench photos: about 20 openly licensed photos of people at about 12 MP from Wikimedia Commons (`app/bench/manifest.csv`, with each photo's licence and author).
+- Measured per photo with `performance.now()`: decode, detect, mask and encode, and total. The first photo of a run is reported on its own, since it includes loading and compiling the model.
+- Configurations: YuNet, YOLO5Face-n, and YOLO5Face-s (the model Ente uses, loaded from a local file); the single and tiled settings; single-threaded WASM, multi-threaded WASM where the page is cross-origin isolated, and WebGPU where the browser has it.
+- Devices: every phone the authors have, at least one low-end Android phone if one can be borrowed, and both laptops. Model, OS and browser versions are recorded.
+- Conditions: the page is loaded, then airplane mode is switched on; battery above 50%, not charging, battery saver off; other apps closed; three runs per configuration, with five minutes' rest between runs; configurations in an order shuffled with a fixed seed.
+- Native baseline: the same ONNX files in ONNX Runtime for Python on each laptop's CPU, with the same photos and settings. This comparison uses detect time only.
+- Reported: the median and interquartile range of per-photo time for each device, browser, backend and configuration, and the browser-to-native ratio of detect time on each laptop, with a bootstrap 95% CI.
+
+## E. Privacy checks
+
+- E1, metadata audit: each author takes 10 photos with location switched on, somewhere public, in every format their phone's camera offers (for example JPEG and HEIC), and saves them through the tool in each browser tested. `exiftool -a -G1 -s` runs on each original and each saved copy. Pass: the saved copy has no GPS, date or time, make, model or serial number, lens, software, maker notes, XMP, IPTC, C2PA or thumbnail fields, and a generic name. The exiftool reports are committed with coordinates removed; the photos are not.
+- E2, file structure: every saved file from E1 and from the privacy suite is parsed segment by segment. Pass: no APP1 (EXIF or XMP), APP11 (C2PA/JUMBF) or APP13 (IPTC) segments and no thumbnail; an ICC profile only if it is the browser's own, identical in every saved file whatever the input; and no bytes after the JPEG end marker (or the PNG IEND chunk).
+- E3, perceptual-hash distance: for every report-split image, the distance between the original and the saved copy (masked at the chosen operating point and encoded by the app's own `render`, `docs/contracts.md` §3) with PDQ, Meta's 256-bit perceptual hash, and with pHash (64-bit, the `imagehash` package). Reported: the share of saved copies within PDQ distance 31 of their original, the threshold in Meta's PDQ documentation, with a bootstrap 95% CI, broken down by the share of the picture that is masked; the full distributions for both hashes; and, as a control, the distances after re-encoding without masks.
+
+## F. Reporting rules
+
+- Every number comes from committed script output (`eval/paper_numbers.py` → `paper_numbers.txt`).
+- Every run is kept in `results/` with its run line (`docs/contracts.md`, §4), including runs that are not reported.
+- Results that go against our expectations are reported in the same way as the rest.
+- Reproducibility: the other author reruns the report-split evaluation from the manifest. With single-threaded WASM and the same versions, the detection files must match byte for byte; their SHA-256s are recorded.
+
+## G. Data ethics
+
+- Only openly licensed, non-intimate images. Test images are never committed or redistributed; the manifest points to the sources and credits the photographers.
+- No face recognition is run on any image.
+- No test image of a stranger appears in the paper or the demo; figures and the demo show only the two authors.
+- The GPS-tagged photos for E1 are taken somewhere public and never committed.
