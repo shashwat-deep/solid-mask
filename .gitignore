@@ -1,0 +1,13 @@
+# Test images and other downloaded data are never committed (CLAUDE.md, rule 3).
+data/
+# Personal notes and drafts of correspondence.
+private/
+# Model weights are never committed without an explicit exception here (CLAUDE.md, rule 4).
+*.onnx
+*.pt
+*.pth
+# Tooling.
+node_modules/
+dist/
+.venv/
+__pycache__/
