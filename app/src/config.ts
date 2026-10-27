@@ -12,3 +12,10 @@ export const DETECTION: DetectOptions = {
   scoreThreshold: 0.5,
   nmsIoU: 0.3,
 };
+
+/**
+ * How far each block reaches beyond the detected box, as a share of the box's width (left and
+ * right) and height (top and bottom). Provisional, like the score threshold: the evaluation sets
+ * it on the tune split (docs/eval-protocol.md, part B).
+ */
+export const PAD = 0.2;
