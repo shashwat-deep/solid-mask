@@ -52,7 +52,7 @@ uv venv --python 3.13 .venv && uv pip sync --python .venv/bin/python eval/requir
 .venv/bin/python eval/download.py                                # test images into data/, checked against their SHA-256s
 .venv/bin/python eval/review_sheet.py                            # page for reviewing the images not yet reviewed
 .venv/bin/python eval/build_manifest.py                          # redraw the test set after a round of the review
-.venv/bin/python eval/run_detect.py --page URL                   # detections into results/detections/ (default: the stub)
+.venv/bin/python eval/run_detect.py --page URL                   # detections into results/detections/ (--page stub: data/stub-runs/)
 .venv/bin/python eval/score.py RUN.jsonl --operating-point       # pad and threshold, on the tune split
 .venv/bin/python eval/score.py RUN.jsonl --pad P --threshold T   # score the report split
 ```

@@ -59,6 +59,9 @@ def test_with_orientation_adds_the_tag_pillow_reads():
         with pytest.raises(ValueError, match='already has EXIF'):
             run_detect.with_orientation(tagged, rotation)
     assert run_detect.with_orientation(stored_jpeg(0), 0) == stored_jpeg(0)
+    padded = stored_jpeg(90)
+    padded = padded[:2] + b'\xff\xff' + padded[2:]  # fill bytes before the first segment are allowed
+    assert Image.open(io.BytesIO(run_detect.with_orientation(padded, 90))).getexif()[0x0112] == 8
 
 
 def test_runner_turns_every_image_upright_and_reruns_identically(chromium, tmp_path):
@@ -97,6 +100,19 @@ def test_runner_refuses_images_that_differ_from_the_manifest(tmp_path):
     args = make_test_set(tmp_path)
     (tmp_path / 'images/r090.jpg').write_bytes(b'not the image')
     with pytest.raises(SystemExit, match='run eval/download.py'):
+        run_detect.main(args)
+
+
+def test_runner_checks_before_starting_the_browser(tmp_path, monkeypatch):
+    args = make_test_set(tmp_path)
+    with pytest.raises(SystemExit):  # a stub run never goes into results/
+        run_detect.main(args[:-2] + ['--out', str(run_detect.ROOT / 'results/detections')])
+    tagged = run_detect.with_orientation(stored_jpeg(90), 90)
+    (tmp_path / 'images/r090.jpg').write_bytes(tagged)
+    rows = bm.read_csv(tmp_path / 'manifest/images.csv')
+    rows[1]['sha256'] = hashlib.sha256(tagged).hexdigest()
+    bm.write_csv(tmp_path / 'manifest/images.csv', bm.IMAGE_COLUMNS, rows)
+    with pytest.raises(SystemExit, match='already has EXIF'):
         run_detect.main(args)
 
 

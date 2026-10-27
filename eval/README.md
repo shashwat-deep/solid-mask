@@ -41,7 +41,7 @@ uv pip sync --python .venv/bin/python eval/requirements.txt
 .venv/bin/python eval/run_detect.py --page http://localhost:5173/eval.html --tiles 1920,0.25
 ```
 
-The app's eval page does not exist yet. Until it does, the default `--page stub` uses `stub/`, which has the same interface but whose "detector" only finds solid magenta rectangles; the tests draw their made-up faces that way.
+The app's eval page does not exist yet. Until it does, the default `--page stub` uses `stub/`, which has the same interface but whose "detector" only finds solid magenta rectangles; the tests draw their made-up faces that way. A stub run measures nothing, so it goes to `data/stub-runs/`, never to `results/`.
 
 The runner gives each image to the page itself, on the page's own address, so nothing is sent anywhere, and it stops the run if the page asks for anything from another site. Open Images stores a few images turned; the runner adds an EXIF orientation tag to those, so the app's decoding turns them upright as it would a phone photo, and it checks every decoded size against the manifest. Each run writes `results/detections/<run-id>.jsonl` (section 4 of the contract) and `<run-id>.run_info.json`, with the versions, hashes and timings. Two runs with the same versions must give the same `boxesSha256`, the SHA-256 of every line after the run line.
 

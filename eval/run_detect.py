@@ -15,7 +15,8 @@ EXIF orientation tag added, so the page's createImageBitmap(..., {imageOrientati
 as it does a phone photo; the runner checks each decoded size against the upright size in the manifest. Before it
 starts, it checks every image file against its SHA-256 in the manifest.
 
-Writes <out>/<run-id>.jsonl: the run line, then one line per image with every box scoring 0.05 or more (docs/
+Writes <out>/<run-id>.jsonl (out is results/detections, or data/stub-runs for the stub, which is never written
+into results/): the run line, then one line per image with every box scoring 0.05 or more (docs/
 contracts.md, section 4). <out>/<run-id>.run_info.json records the versions, hashes, timings and boxesSha256, the
 SHA-256 of the lines after the run line, which two runs on the same versions must share. A run that stops early
 leaves only <run-id>.jsonl.part. Only the transform "none" is supported so far.
@@ -56,11 +57,20 @@ def with_orientation(jpeg, rotation):
     if jpeg[:2] != b'\xff\xd8':
         raise ValueError('not a JPEG file')
     at, insert_at = 2, 2
-    while jpeg[at] == 0xFF and jpeg[at + 1] not in (0xDA, 0xD9):  # the segments before the image data
+    while at + 1 < len(jpeg) and jpeg[at] == 0xFF:  # the segments before the image data
+        marker = jpeg[at + 1]
+        if marker == 0xFF:            # a fill byte before a marker
+            at += 1
+            continue
+        if marker in (0xDA, 0xD9):    # start of the image data, or the end of the file
+            break
+        if marker == 0x01 or 0xD0 <= marker <= 0xD7:  # markers without a length
+            at += 2
+            continue
         length = int.from_bytes(jpeg[at + 2:at + 4], 'big')
-        if jpeg[at + 1] == 0xE1 and jpeg[at + 4:at + 10] == b'Exif\x00\x00':
+        if marker == 0xE1 and jpeg[at + 4:at + 10] == b'Exif\x00\x00':
             raise ValueError('the JPEG already has EXIF data')
-        if jpeg[at + 1] == 0xE0 and at == 2:
+        if marker == 0xE0 and at == 2:
             insert_at = at + 2 + length
         at += 2 + length
     tiff = (b'MM\x00\x2a\x00\x00\x00\x08'                    # big-endian TIFF header, first directory at byte 8
@@ -80,9 +90,9 @@ def git_commit():
     try:
         commit = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=ROOT, capture_output=True, text=True,
                                 check=True).stdout.strip()
-        dirty = subprocess.run(['git', 'status', '--porcelain', '--', 'eval'], cwd=ROOT, capture_output=True,
-                               text=True, check=True).stdout.strip()
-        return commit + (' with uncommitted changes in eval/' if dirty else '')
+        dirty = subprocess.run(['git', 'status', '--porcelain'], cwd=ROOT, capture_output=True, text=True,
+                               check=True).stdout.strip()
+        return commit + (' with uncommitted changes' if dirty else '')
     except (OSError, subprocess.CalledProcessError):
         return None
 
@@ -98,11 +108,14 @@ def main(argv=None):
     ap.add_argument('--limit', type=int, help='only the first N images of the split, in manifest order')
     ap.add_argument('--manifest', type=Path, default=ROOT / 'eval/manifest')
     ap.add_argument('--images', type=Path, default=ROOT / 'data/openimages/images')
-    ap.add_argument('--out', type=Path, default=ROOT / 'results/detections')
+    ap.add_argument('--out', type=Path, help='default: results/detections, or data/stub-runs for the stub')
     ap.add_argument('--run-id', help='default: <date>-<stub or app>-<model>-<input size>-<setting>')
     args = ap.parse_args(argv)
 
     stub = args.page == 'stub'
+    args.out = args.out or ROOT / ('data/stub-runs' if stub else 'results/detections')
+    if stub and (ROOT / 'results') in [args.out.resolve(), *args.out.resolve().parents]:
+        ap.error('a stub run measures nothing, so it is never written into results/')
     page_url = f'{STUB_ORIGIN}/index.html' if stub else args.page
     parts = urlsplit(page_url)
     if parts.scheme not in ('http', 'https') or not parts.netloc:
@@ -125,6 +138,12 @@ def main(argv=None):
     if bad:
         sys.exit(f'{len(bad)} images are missing or differ from the manifest, for example {bad[0]}; '
                  f'run eval/download.py')
+    for r in rows:  # fail here, not inside the browser, on an image that cannot be served upright
+        if int(r['rotation']):
+            try:
+                with_orientation(files[r['imageId']].read_bytes(), int(r['rotation']))
+            except (ValueError, IndexError) as e:
+                sys.exit(f'{r["imageId"]}: cannot add an EXIF orientation tag: {e}')
     names = {r['imageId']: r['imageId'] + files[r['imageId']].suffix for r in rows}
     served = {names[r['imageId']]: r for r in rows}
 
@@ -184,6 +203,7 @@ def main(argv=None):
                              f'says the upright image is {row["width"]} x {row["height"]}')
                 lines.append({'imageId': row['imageId'], 'transform': 'none', 'inputSize': args.input_size,
                               'tiling': tiling, 'boxes': result['boxes']})
+            page.close(run_before_unload=True)  # so a request made while the page unloads is checked too
             browser_version = browser.version
         finally:
             browser.close()
