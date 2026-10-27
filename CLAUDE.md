@@ -41,7 +41,17 @@ If you don't know whose session you are in, ask. Don't edit the other person's f
 
 ## Commands
 
-Add the app's install, dev and build commands here at M1, and the eval commands once they exist.
+Add the eval commands here once they exist.
+
+App (`app/`):
+
+```bash
+cd app
+npm ci
+npm run dev         # development server
+npm run build       # type-checks, then writes the site to app/dist
+npm run preview     # serves app/dist
+```
 
 Privacy suite (`tests/`, see `tests/README.md`):
 
