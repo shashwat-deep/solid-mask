@@ -6,7 +6,8 @@ Reads every JPEG and PNG given (folders are searched for .jpg, .jpeg and .png fi
 independently of the app and of the privacy suite, and applies the protocol's pass rule. A JPEG fails if it has
 
 - an APP1 segment (EXIF or XMP), an APP11 segment (C2PA and other JUMBF boxes) or an APP13 segment (IPTC);
-- a thumbnail (in the JFIF segment, or a JFXX extension);
+- a thumbnail (in the JFIF segment, or a JFXX extension), or a JFIF segment of any length other than the 14 bytes
+  of a plain header, since bytes could be hidden after it;
 - an ICC profile, unless every file checked in the same run has the very same one (the protocol allows only the
   browser's own profile, identical in every saved file whatever the input, so a profile that only some files
   carry, or that differs between them, came from the input);
@@ -71,8 +72,13 @@ def jpeg_name(marker, payload):
         return CODING[marker], 'picture'
     if marker == 0xE0:
         if payload[:5] == b'JFIF\x00':
-            thumbnail = len(payload) >= 14 and payload[12] * payload[13] > 0
-            return ('JFIF with a thumbnail', 'forbidden') if thumbnail else ('JFIF', 'picture')
+            if len(payload) < 14:
+                return 'JFIF cut short', 'forbidden'
+            if payload[12] * payload[13] > 0:
+                return 'JFIF with a thumbnail', 'forbidden'
+            if len(payload) > 14:
+                return f'JFIF with {len(payload) - 14} bytes after its header', 'forbidden'
+            return 'JFIF', 'picture'
         if payload[:5] == b'JFXX\x00':
             return 'JFXX (a thumbnail)', 'forbidden'
     if marker == 0xE1:

@@ -1,5 +1,6 @@
 """Tests of check_files.py (check E2) on JPEG and PNG files made to carry each kind of hidden data."""
 import io, json
+from pathlib import Path
 import numpy as np
 import pytest
 from PIL import Image, ImageCms, PngImagePlugin
@@ -32,7 +33,7 @@ def report(tmp_path, files):
     for name, data in files.items():
         (tmp_path / name).write_bytes(data)
         paths.append(tmp_path / name)
-    return {e['file'].rsplit('/', 1)[-1]: e for e in check_files.check(paths)['files']}
+    return {Path(e['file']).name: e for e in check_files.check(paths)['files']}
 
 
 def test_a_plain_jpeg_passes_and_lists_its_segments(tmp_path):
@@ -48,6 +49,9 @@ def test_a_plain_jpeg_passes_and_lists_its_segments(tmp_path):
     ('thumb.jpg', with_segment(jpeg(), 0xE0, b'JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x01\x01' + bytes(3)),
      'JFIF with a thumbnail'),
     ('jfxx.jpg', with_segment(jpeg(), 0xE0, b'JFXX\x00\x13' + bytes(4)), 'JFXX (a thumbnail)'),
+    ('jfif-extra.jpg', with_segment(jpeg(), 0xE0, b'JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00hello'),
+     'JFIF with 5 bytes after its header'),
+    ('jfif-short.jpg', with_segment(jpeg(), 0xE0, b'JFIF\x00\x01\x01'), 'JFIF cut short'),
     ('trailing.jpg', jpeg() + b'\xff\xd8 a second image', '17 bytes after the end of the image'),
 ], ids=lambda v: v if isinstance(v, str) and v.endswith('.jpg') else '')
 def test_each_kind_of_hidden_data_fails(tmp_path, name, data, problem):
