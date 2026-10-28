@@ -22,6 +22,28 @@ def stored_jpeg(rotation):
     return buffer.getvalue()
 
 
+def tagged_jpeg(rotation, orientation):
+    """stored_jpeg() with EXIF data of its own: a camera make and, unless orientation is None, an orientation."""
+    exif = Image.Exif()
+    exif[0x010F] = 'Test camera'
+    if orientation is not None:
+        exif[0x0112] = orientation
+    buffer = io.BytesIO()
+    Image.open(io.BytesIO(stored_jpeg(rotation))).save(buffer, 'JPEG', quality=100, subsampling=0,
+                                                       exif=exif.tobytes())
+    return buffer.getvalue()
+
+
+def replace_image(folder, image_id, jpeg):
+    """Put another file in place of an image of the made-up test set, with its SHA-256 in the manifest."""
+    (folder / 'images' / f'{image_id}.jpg').write_bytes(jpeg)
+    rows = bm.read_csv(folder / 'manifest/images.csv')
+    for r in rows:
+        if r['imageId'] == image_id:
+            r['sha256'] = hashlib.sha256(jpeg).hexdigest()
+    bm.write_csv(folder / 'manifest/images.csv', bm.IMAGE_COLUMNS, rows)
+
+
 def make_test_set(folder):
     (folder / 'images').mkdir(parents=True)
     (folder / 'manifest').mkdir()
@@ -39,6 +61,13 @@ def make_test_set(folder):
     return ['--manifest', str(folder / 'manifest'), '--images', str(folder / 'images'), '--out', str(folder / 'out')]
 
 
+def keep_all(folder):
+    """Record a "keep" for every image of the made-up test set, as the review would."""
+    bm.write_csv(folder / 'manifest/review.csv', bm.REVIEW_COLUMNS,
+                 [{'imageId': r['imageId'], 'decision': 'keep', 'reason': '', 'reviewer': 'test'}
+                  for r in bm.read_csv(folder / 'manifest/images.csv')])
+
+
 def test_with_orientation_adds_the_tag_pillow_reads():
     for rotation in (90, 180, 270):
         tagged = run_detect.with_orientation(stored_jpeg(rotation), rotation)
@@ -52,6 +81,17 @@ def test_with_orientation_adds_the_tag_pillow_reads():
     padded = stored_jpeg(90)
     padded = padded[:2] + b'\xff\xff' + padded[2:]  # fill bytes before the first segment are allowed
     assert Image.open(io.BytesIO(run_detect.with_orientation(padded, 90))).getexif()[0x0112] == 8
+
+
+def test_with_orientation_replaces_exif_data_without_an_orientation():
+    for orientation in (None, 1):
+        stored = tagged_jpeg(90, orientation)
+        image = Image.open(io.BytesIO(run_detect.with_orientation(stored, 90)))
+        assert [data[:6] for marker, data in image.applist if marker == 'APP1'] == [b'Exif\x00\x00']
+        assert dict(image.getexif()) == {0x0112: 8} and ImageOps.exif_transpose(image).size == UPRIGHT
+        assert image.tobytes() == Image.open(io.BytesIO(stored)).tobytes()
+    with pytest.raises(ValueError, match='already has EXIF orientation 6'):
+        run_detect.with_orientation(tagged_jpeg(90, 6), 90)
 
 
 def test_runner_turns_every_image_upright_and_reruns_identically(chromium, tmp_path):
@@ -128,13 +168,24 @@ def test_runner_checks_before_starting_the_browser(tmp_path, monkeypatch):
     args = make_test_set(tmp_path)
     with pytest.raises(SystemExit):  # a stub run never goes into results/
         run_detect.main(args[:-2] + ['--out', str(run_detect.ROOT / 'results/detections')])
-    tagged = run_detect.with_orientation(stored_jpeg(90), 90)
-    (tmp_path / 'images/r090.jpg').write_bytes(tagged)
-    rows = bm.read_csv(tmp_path / 'manifest/images.csv')
-    rows[1]['sha256'] = hashlib.sha256(tagged).hexdigest()
-    bm.write_csv(tmp_path / 'manifest/images.csv', bm.IMAGE_COLUMNS, rows)
-    with pytest.raises(SystemExit, match='already has EXIF'):
+    for i, jpeg, orientation in (('r000', tagged_jpeg(0, 3), 3),
+                                 ('r090', run_detect.with_orientation(stored_jpeg(90), 90), 8)):
+        folder = tmp_path / i
+        args = make_test_set(folder)
+        replace_image(folder, i, jpeg)
+        for transform in ('none', 'rot0'):  # a file's own orientation counts whatever the transform
+            with pytest.raises(SystemExit, match=f'EXIF orientation is {orientation}, not 1'):
+                run_detect.main(args + ['--transforms', transform])
+
+    folder, buffer = tmp_path / 'png', io.BytesIO()
+    args = make_test_set(folder)
+    Image.open(io.BytesIO(stored_jpeg(90))).save(buffer, 'PNG')
+    replace_image(folder, 'r090', buffer.getvalue())  # stored turned, and no JPEG to put a tag in
+    with pytest.raises(SystemExit, match='not a JPEG file'):
         run_detect.main(args)
+    rows = bm.read_csv(folder / 'manifest/images.csv')  # served as upright PNGs, the images need no tag
+    run_detect.check_orientations(rows, {r['imageId']: folder / 'images' / f'{r["imageId"]}.jpg' for r in rows},
+                                  as_stored=False)
 
 
 def test_runner_stops_when_the_page_asks_another_origin(chromium, site, tmp_path):
@@ -143,6 +194,9 @@ def test_runner_stops_when_the_page_asks_another_origin(chromium, site, tmp_path
     (folder / 'solid-mask-stub.js').write_bytes((run_detect.STUB / 'solid-mask-stub.js').read_bytes())
     (folder / 'index.html').write_text('<!doctype html><script type="module" src="solid-mask-stub.js"></script>'
                                        '<script>fetch("https://example.org/beacon").catch(() => {})</script>')
+    with pytest.raises(SystemExit, match='before it is reviewed'):  # a real page runs only on reviewed images
+        run_detect.main(args + ['--page', f'{base}/index.html'])
+    keep_all(tmp_path)
     with pytest.raises(SystemExit, match='another origin'):
         run_detect.main(args + ['--page', f'{base}/index.html'])
     assert '/index.html' in requested and not any(p.startswith(run_detect.IMAGE_PATH) for p in requested)
