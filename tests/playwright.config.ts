@@ -33,6 +33,8 @@ export default defineConfig({
       command: `npm --prefix ../app run dev -- --port ${EVAL_PORT} --strictPort --host 127.0.0.1`,
       url: EVAL_PAGE,
       reuseExistingServer: !process.env.CI,
+      // predev may first download the model, on a cold cache.
+      timeout: 180_000,
     },
   ],
 });

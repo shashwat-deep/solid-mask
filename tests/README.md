@@ -24,7 +24,8 @@ Every privacy test first checks that the face in the saved copy is covered, so n
 
 `app/eval-page.spec.ts` drives the eval page (`app/eval.html`, `docs/contracts.md`, section 3) on the app's development server, as `eval/run_detect.py` does: the test photo is served on the page's own origin and detected with the runner's options. It checks that:
 
-- the face matches what OpenCV's FaceDetectorYN finds with the same model (within 0.5 px and 0.0005 of score), with the same 15 boxes scoring 0.05 or more;
+- the face matches what OpenCV's FaceDetectorYN finds with the same model (within 0.5 px and 0.0005 of score), with the same 7 boxes scoring 0.10 or more;
+- a copy of the photo stored turned, with the EXIF orientation the runner adds, decodes upright with the face within 2 px;
 - `render()` covers the face and writes a file with nothing but the picture;
 - `info()` gives the ONNX Runtime version, `wasm`, one thread and the model's SHA-256;
 - the deployed build holds neither the page nor its code.
