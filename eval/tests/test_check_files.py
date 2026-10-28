@@ -63,8 +63,10 @@ def test_a_comment_or_unknown_segment_is_listed_for_the_authors(tmp_path):
 
 
 def test_icc_profiles_must_be_the_same_in_every_file(tmp_path):
-    same = report(tmp_path, {'a.jpg': jpeg(icc_profile=SRGB), 'b.jpg': jpeg(icc_profile=SRGB), 'c.jpg': jpeg()})
+    same = report(tmp_path, {'a.jpg': jpeg(icc_profile=SRGB), 'b.jpg': jpeg(icc_profile=SRGB)})
     assert all(e['pass'] for e in same.values()) and same['a.jpg']['icc'] == same['b.jpg']['icc']
+    some = report(tmp_path, {'a.jpg': jpeg(icc_profile=SRGB), 'c.jpg': jpeg()})  # a profile only some files carry
+    assert not some['a.jpg']['pass'] and some['c.jpg']['pass'] and '1 files have none' in some['a.jpg']['problems'][0]
     mixed = report(tmp_path, {'a.jpg': jpeg(icc_profile=SRGB), 'b.jpg': jpeg(icc_profile=LAB)})
     assert not mixed['a.jpg']['pass'] and not mixed['b.jpg']['pass']
     assert any('ICC profile' in p for p in mixed['b.jpg']['problems'])
@@ -85,6 +87,10 @@ def test_png_chunks(tmp_path):
     assert entries['plain.png']['pass'] and entries['plain.png']['segments'][0] == 'IHDR'
     assert 'text (tEXt)' in entries['text.png']['problems'] and 'EXIF (eXIf)' in entries['exif.png']['problems']
     assert '4 bytes after the end of the image' in entries['trailing.png']['problems']
+    broken = bytearray(png())
+    broken[45] ^= 0xFF  # inside the first IDAT chunk's data (after IHDR, IDAT's length and type): wrong CRC
+    entry = report(tmp_path, {'broken.png': bytes(broken)})['broken.png']
+    assert not entry['pass'] and 'CRC' in entry['problems'][0]
 
 
 def test_main_searches_folders_writes_the_report_and_exits_on_failure(tmp_path, capsys):

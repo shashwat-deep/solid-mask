@@ -7,20 +7,21 @@ independently of the app and of the privacy suite, and applies the protocol's pa
 
 - an APP1 segment (EXIF or XMP), an APP11 segment (C2PA and other JUMBF boxes) or an APP13 segment (IPTC);
 - a thumbnail (in the JFIF segment, or a JFXX extension);
-- an ICC profile that differs from the ICC profile of another file checked in the same run (the protocol allows
-  only the browser's own profile, identical in every saved file whatever the input);
+- an ICC profile, unless every file checked in the same run has the very same one (the protocol allows only the
+  browser's own profile, identical in every saved file whatever the input, so a profile that only some files
+  carry, or that differs between them, came from the input);
 - any byte after the end-of-image marker; or
 - a structure the parser cannot follow.
 
 A PNG fails if it has an eXIf chunk (EXIF), a tEXt, zTXt or iTXt chunk (text, which is where PNG keeps XMP), a tIME
-chunk, a caBX chunk (C2PA), an iCCP chunk that differs from another file's, any byte after the IEND chunk, or a
-structure the parser cannot follow. Segments and chunks that the rule does not name but that are not needed to show the picture (a
+chunk, a caBX chunk (C2PA), an iCCP chunk under the same rule as the JPEG's ICC profile, any byte after the IEND
+chunk, or a structure the parser cannot follow (a chunk's CRC included). Segments and chunks that the rule does not name but that are not needed to show the picture (a
 comment, an Adobe or MPF segment, for example) are listed under "other", for the authors to judge. The report gives
 each file's segments in order. It never includes pixels or metadata values, only segment names and sizes.
 
 Exits with an error when any file fails.
 """
-import argparse, hashlib, json, sys
+import argparse, hashlib, json, sys, zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -119,7 +120,10 @@ def png_chunks(data):
         kind = data[pos + 4:pos + 8]
         if pos + 12 + length > len(data):
             raise ValueError(f'the chunk at byte {pos} runs past the end of the file')
-        chunks.append((kind, data[pos + 8:pos + 8 + length]))
+        payload = data[pos + 8:pos + 8 + length]
+        if zlib.crc32(kind + payload) != int.from_bytes(data[pos + 8 + length:pos + 12 + length], 'big'):
+            raise ValueError(f'the CRC of the chunk at byte {pos} is wrong')
+        chunks.append((kind, payload))
         pos += 12 + length
         if kind == b'IEND':
             return chunks, pos
@@ -164,10 +168,13 @@ def check(paths):
             profiles.setdefault(entry['icc'], []).append(entry)
         entry.update({'segments': names, 'problems': problems, 'other': other})
         files.append(entry)
-    if len(profiles) > 1:
+    without = sum('segments' in e and 'icc' not in e for e in files)
+    if len(profiles) > 1 or (profiles and without):
         for digest, entries in profiles.items():
             for entry in entries:
-                entry['problems'].append(f'its ICC profile ({digest[:12]}) differs from another file\'s')
+                entry['problems'].append(f'its ICC profile ({digest[:12]}) is not the same in every saved file: '
+                                         + ('another file has a different one' if len(profiles) > 1
+                                            else f'{without} files have none'))
     for entry in files:
         entry['pass'] = not entry['problems']
     return {'files': files, 'passed': sum(e['pass'] for e in files), 'failed': sum(not e['pass'] for e in files),
