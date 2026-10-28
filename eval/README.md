@@ -6,6 +6,7 @@ The scripts here measure how often the tool leaves a face uncovered, following [
 
 - `manifest/images.csv`: the test images, 200 in the tune split and 800 in the report split. For each: where it comes from, its licence, author and title as Open Images lists them, its Flickr page, the SHA-256 of the file, the width and height of the upright image, and its Rotation.
 - `manifest/faces.csv`: one row per face box. `x, y, w, h` are pixels of the upright image; the `Norm` columns are Open Images' own coordinates, which refer to the image as stored. Also Open Images' occluded, truncated and depiction flags, and `yaw`, empty until labelled.
+- `manifest/luma.csv`: the mean luma of each face, for the measured-light breakdown. `face_luma.py` writes it; run it again whenever the manifest changes.
 - `manifest/review.csv`: the review's decisions, one row per image: `keep`, or `remove` with a reason code (`intimate`, `doubtful` or `unboxed-face`), and who reviewed it. It never describes an image.
 - `build_manifest.py`: draws the test set from Open Images V7 and writes the two manifests.
 - `download.py`: downloads the images and checks their SHA-256s.
@@ -17,6 +18,7 @@ The scripts here measure how often the tool leaves a face uncovered, following [
 - `yaw_sheet.py`: makes a page for labelling the yaw of the sample faces.
 - `yaw_agreement.py`: compares the two authors' yaw labels (Cohen's κ) and writes the settled labels into `manifest/faces.csv`.
 - `labels/`: each author's yaw labels, and the faces they disagreed on.
+- `face_luma.py`: measures how bright each face is (mean luma inside its box).
 - `check_colour.py`: checks that the images the transforms start from have the pixels Chromium decodes.
 - `tests/`: tests for these scripts (pytest).
 
@@ -60,7 +62,7 @@ The runner gives each image to the page itself, on the page's own address, so no
 .venv/bin/python eval/score.py results/detections/<run-id>.jsonl --pad 0.10 --threshold 0.50 --split report
 ```
 
-The first finds the padding and threshold on the tune split by the protocol's rule; the second scores the report split at those values. Each transform and setting in the file is scored on its own. A mask covers whole pixels, rounded outward as the app paints it, and a face's covered share is computed exactly from those pixels, so a face turned by a rotation transform needs no special case. The summary is JSON (`--out`); `--faces` also writes one row per face for further breakdowns.
+The first finds the padding and threshold on the tune split by the protocol's rule; the second scores the report split at those values. Each transform and setting in the file is scored on its own. A mask covers whole pixels, rounded outward as the app paints it, and a face's covered share is computed exactly from those pixels, so a face turned by a rotation transform needs no special case. Besides face size, occlusion, truncation and yaw, it breaks the miss rate down into the darkest tenth of faces by mean luma (`manifest/luma.csv`) and the rest. The summary is JSON (`--out`); `--faces` also writes one row per face for further breakdowns.
 
 ## Yaw labels
 
