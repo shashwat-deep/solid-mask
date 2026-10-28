@@ -111,9 +111,10 @@ def test_download_lists_every_failure(site, tmp_path, capsys):
         download.main([str(tmp_path / 'images.csv'), '--out', str(tmp_path / 'out')])
 
 
-def make_open_images(base, folder, n=40):
+def make_open_images(base, folder, n=40, oriented=()):
     """Made-up Open Images metadata and images: n images with one face each, rotations 0, 90, 180 and 270 in
-    turn, plus one image each with a group-of face, an unknown orientation and another licence. Returns META."""
+    turn, plus one image each with a group-of face, an unknown orientation and another licence. The files of the
+    images in oriented carry EXIF orientation 6. Returns META."""
     bbox = ['ImageID,Source,LabelName,Confidence,XMin,XMax,YMin,YMax,IsOccluded,IsTruncated,IsGroupOf,IsDepiction,'
             'IsInside']
     info = ['ImageID,Subset,OriginalURL,OriginalLandingURL,License,AuthorProfileURL,Author,Title,OriginalSize,'
@@ -127,8 +128,10 @@ def make_open_images(base, folder, n=40):
         bbox.append(f'{i},xclick,/m/01g317,1,0,1,0,1,0,0,0,0,0')  # a "Person" box, which is not a face
         info.append(f'{i},validation,https://example.org/{i}_o.jpg,https://example.org/{i},{licence},'
                     f'https://example.org/people/{n_},"Author, {n_}","A ""title"", {n_}",1,x,,{rotation}')
-        buffer = io.BytesIO()
-        white_patch((80, 60), BOX).convert('RGB').save(buffer, 'JPEG', quality=100)
+        buffer, exif = io.BytesIO(), Image.Exif()
+        if i in oriented:
+            exif[0x0112] = 6
+        white_patch((80, 60), BOX).convert('RGB').save(buffer, 'JPEG', quality=100, exif=exif.tobytes())
         (folder / 'validation' / f'{i}.jpg').write_bytes(buffer.getvalue())
     files = {'validation-annotations-bbox.csv': bbox, 'test-annotations-bbox.csv': bbox[:1],
              'validation-images-with-rotation.csv': info, 'test-images-with-rotation.csv': info[:1],
@@ -141,14 +144,19 @@ def make_open_images(base, folder, n=40):
     return meta
 
 
-def test_build_manifest_end_to_end(site, tmp_path, monkeypatch):
+def test_build_manifest_end_to_end(site, tmp_path, monkeypatch, capsys):
     base, folder, _ = site
-    monkeypatch.setattr(bm, 'META', make_open_images(base, folder))
+    eligible = [f'{n:016x}' for n in range(40)]
+    oriented = bm.select(eligible, {}, 2, 4)[2][0]  # the first report image, whose file carries an EXIF orientation
+    monkeypatch.setattr(bm, 'META', make_open_images(base, folder, oriented={oriented}))
     monkeypatch.setattr(bm, 'CVDF', base + '/{subset}/{image_id}.jpg')
     paths = ['--meta', str(tmp_path / 'meta'), '--images', str(tmp_path / 'images'),
              '--manifest', str(tmp_path / 'manifest')]
     bm.main(['--tune', '2', '--report', '4'] + paths)
+    assert '1 left out for an EXIF orientation other than 1' in capsys.readouterr().out
     images = bm.read_csv(tmp_path / 'manifest/images.csv')
+    assert {r['imageId'] for r in images} == {i for i, _ in bm.select(
+        [i for i in eligible if i != oriented], {}, 2, 4)}  # replaced by the next report image
     faces = {r['imageId']: r for r in bm.read_csv(tmp_path / 'manifest/faces.csv')}
     assert [r['split'] for r in images].count('tune') == 2 and len(images) == len(faces) == 6
     assert {'90', '270'} & {r['rotation'] for r in images} and len({r['rotation'] for r in images}) >= 3

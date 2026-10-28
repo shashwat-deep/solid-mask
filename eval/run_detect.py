@@ -180,10 +180,17 @@ class EvalPage:
             self._check()
 
 
-def check_orientations(rows, files):
-    """Fail before the browser starts, not inside it, on an image stored turned that cannot be served upright."""
+def check_orientations(rows, files, as_stored=True):
+    """Fail before the browser starts, not inside it, on an image that cannot be served upright: one whose file
+    carries an EXIF orientation other than 1, which the page would apply (build_manifest.py leaves such images
+    out), or, when the files are served as stored (transform none), one stored turned that cannot take an
+    orientation tag."""
     for r in rows:
-        if int(r['rotation']):
+        own = transforms.exif_orientation(files[r['imageId']])
+        if own not in (None, 1):
+            sys.exit(f'{r["imageId"]}: its file carries EXIF orientation {own}, which the page would apply; '
+                     f'build_manifest.py leaves such images out')
+        if as_stored and int(r['rotation']):
             try:
                 with_orientation(files[r['imageId']].read_bytes(), int(r['rotation']))
             except (ValueError, IndexError) as e:
@@ -263,8 +270,7 @@ def main(argv=None):
         sys.exit(f'{len(bad)} images are missing or differ from the manifest, for example {bad[0]}; '
                  f'run eval/download.py')
     require_review(rows, args.manifest, stub)
-    if 'none' in transform_list:
-        check_orientations(rows, files)
+    check_orientations(rows, files, as_stored='none' in transform_list)
 
     setting = 'single' if tiling['kind'] == 'none' else f'tiles{tiling["longSide"]}-{tiling["overlap"]}'
     run_id = args.run_id or (f'{datetime.date.today().isoformat()}-{"stub" if stub else "app"}-{args.model}-'

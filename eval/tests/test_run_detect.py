@@ -22,6 +22,26 @@ def stored_jpeg(rotation):
     return buffer.getvalue()
 
 
+def tagged_jpeg(rotation, orientation):
+    """stored_jpeg() carrying an EXIF orientation tag of its own."""
+    exif = Image.Exif()
+    exif[0x0112] = orientation
+    buffer = io.BytesIO()
+    Image.open(io.BytesIO(stored_jpeg(rotation))).save(buffer, 'JPEG', quality=100, subsampling=0,
+                                                       exif=exif.tobytes())
+    return buffer.getvalue()
+
+
+def replace_image(folder, image_id, jpeg):
+    """Put another file in place of an image of the made-up test set, with its SHA-256 in the manifest."""
+    (folder / 'images' / f'{image_id}.jpg').write_bytes(jpeg)
+    rows = bm.read_csv(folder / 'manifest/images.csv')
+    for r in rows:
+        if r['imageId'] == image_id:
+            r['sha256'] = hashlib.sha256(jpeg).hexdigest()
+    bm.write_csv(folder / 'manifest/images.csv', bm.IMAGE_COLUMNS, rows)
+
+
 def make_test_set(folder):
     (folder / 'images').mkdir(parents=True)
     (folder / 'manifest').mkdir()
@@ -135,13 +155,19 @@ def test_runner_checks_before_starting_the_browser(tmp_path, monkeypatch):
     args = make_test_set(tmp_path)
     with pytest.raises(SystemExit):  # a stub run never goes into results/
         run_detect.main(args[:-2] + ['--out', str(run_detect.ROOT / 'results/detections')])
-    tagged = run_detect.with_orientation(stored_jpeg(90), 90)
-    (tmp_path / 'images/r090.jpg').write_bytes(tagged)
-    rows = bm.read_csv(tmp_path / 'manifest/images.csv')
-    rows[1]['sha256'] = hashlib.sha256(tagged).hexdigest()
-    bm.write_csv(tmp_path / 'manifest/images.csv', bm.IMAGE_COLUMNS, rows)
-    with pytest.raises(SystemExit, match='already has EXIF'):
-        run_detect.main(args)
+    for i, jpeg, refusal in (('r000', tagged_jpeg(0, 3), 'carries EXIF orientation 3'),
+                             ('r090', run_detect.with_orientation(stored_jpeg(90), 90), 'carries EXIF orientation 8'),
+                             ('r090', tagged_jpeg(90, 1), 'already has EXIF')):
+        folder = tmp_path / f'{i}-{refusal.split()[-1]}'
+        args = make_test_set(folder)
+        replace_image(folder, i, jpeg)
+        for transform in ('none', 'rot0'):  # a file's own tag counts whatever the transform
+            if refusal != 'already has EXIF' or transform == 'none':
+                with pytest.raises(SystemExit, match=refusal):
+                    run_detect.main(args + ['--transforms', transform])
+    rows = bm.read_csv(folder / 'manifest/images.csv')  # served as upright PNGs, the images need no tag
+    run_detect.check_orientations(rows, {r['imageId']: folder / 'images' / f'{r["imageId"]}.jpg' for r in rows},
+                                  as_stored=False)
 
 
 def test_runner_stops_when_the_page_asks_another_origin(chromium, site, tmp_path):

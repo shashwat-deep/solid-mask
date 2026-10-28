@@ -1,6 +1,6 @@
 """Tests of the image transforms in transforms.py: rotation, darkening with sensor noise, and the upright sRGB image
 they start from."""
-import io
+import base64, io
 import numpy as np
 import pytest
 from PIL import Image, ImageCms
@@ -89,6 +89,50 @@ def test_upright_converts_like_chromium(tmp_path):
     turned = transforms.upright(tmp_path / 'plain.jpg', 90)
     assert turned.size == (30, 50)
     assert np.array_equal(np.asarray(turned), np.asarray(Image.open(tmp_path / 'plain.jpg').rotate(90, expand=True)))
+
+
+XMP_ORIENTATION_6 = (b'<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF '
+                     b'xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description '
+                     b'xmlns:tiff="http://ns.adobe.com/tiff/1.0/" tiff:Orientation="6"/></rdf:RDF></x:xmpmeta>')
+
+
+def orientation_files(folder):
+    """A 40 x 30 photo with no orientation tag, with EXIF orientation 1 and 6, and with XMP orientation 6."""
+    image, files = Image.new('RGB', (40, 30), (10, 20, 30)), {}
+    for name, orientation, options in (('plain', None, {}), ('one', 1, {}), ('six', 6, {}),
+                                       ('xmp', None, {'xmp': XMP_ORIENTATION_6})):
+        if orientation:
+            exif = Image.Exif()
+            exif[0x0112] = orientation
+            options['exif'] = exif.tobytes()
+        files[name] = folder / f'{name}.jpg'
+        files[name].write_bytes(jpeg(image, **options).getvalue())
+    return files
+
+
+def test_upright_refuses_a_file_with_an_exif_orientation(tmp_path):
+    files = orientation_files(tmp_path)
+    assert [transforms.exif_orientation(path) for path in files.values()] == [None, 1, 6, None]
+    assert Image.open(files['xmp']).getexif()[0x0112] == 6  # Pillow's getexif() reads XMP too
+    for name in ('plain', 'one', 'xmp'):
+        assert transforms.upright(files[name], 90).size == (30, 40)
+    with pytest.raises(ValueError, match='EXIF orientation is 6'):
+        transforms.upright(files['six'], 0)
+
+
+def test_chromium_turns_an_image_by_its_exif_orientation_only(chromium, tmp_path):
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        page = browser.new_page()
+        for name, path in orientation_files(tmp_path).items():
+            size = page.evaluate("""async (data) => {
+                const blob = await (await fetch('data:image/jpeg;base64,' + data)).blob();
+                const bitmap = await createImageBitmap(blob);
+                return [bitmap.width, bitmap.height];
+            }""", base64.b64encode(path.read_bytes()).decode())
+            assert size == ([30, 40] if transforms.exif_orientation(path) == 6 else [40, 30]), name
+        browser.close()
 
 
 def test_check_colour_agrees_with_chromium_on_each_kind_of_profile(chromium, tmp_path, capsys):
