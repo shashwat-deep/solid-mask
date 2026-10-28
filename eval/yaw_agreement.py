@@ -67,10 +67,15 @@ def main(argv=None):
     ap.add_argument('--write', action='store_true', help='put the final labels into faces.csv')
     args = ap.parse_args(argv)
 
+    commit = run_detect.git_commit()  # before this script writes anything into the repository
     manifest_sha = {name: download.sha256_file(args.manifest / name) for name in ('images.csv', 'faces.csv')}
     images = {r['imageId']: r for r in build_manifest.read_csv(args.manifest / 'images.csv')}
     faces = build_manifest.read_csv(args.manifest / 'faces.csv')
     chosen = [(f['imageId'], f['faceId']) for f in yaw_sheet.sample(images, faces)]
+    for name in args.labellers:
+        if not (args.labels / f'yaw-{name}.csv').exists():
+            sys.exit(f'{args.labels / f"yaw-{name}.csv"} does not exist; once you have both finished, copy both files '
+                     f'from data/yaw/ into {args.labels} and commit them together')
     first, second = (yaw_sheet.read_labels(args.labels / f'yaw-{name}.csv') for name in args.labellers)
     outside = {}
     for name, labels in zip(args.labellers, (first, second)):
@@ -112,7 +117,7 @@ def main(argv=None):
     summary.update({
         'labelsSha256': {name: download.sha256_file(args.labels / f'yaw-{name}.csv') for name in args.labellers},
         'disagreementsSha256': download.sha256_file(path), 'manifestSha256': manifest_sha,
-        'gitCommit': run_detect.git_commit(), 'python': platform.python_version(), 'numpy': np.__version__})
+        'gitCommit': commit, 'python': platform.python_version(), 'numpy': np.__version__})
 
     text = json.dumps(summary, indent=1)
     out = args.out or args.labels / 'agreement.json'

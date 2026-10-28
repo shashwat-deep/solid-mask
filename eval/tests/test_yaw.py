@@ -75,14 +75,14 @@ def test_sheet_shows_only_faces_not_yet_labelled(tmp_path):
     done = {(f['imageId'], f['faceId']): 'frontal' for f in chosen[:5]}
     write_labels(tmp_path, 'ann', done)
     (tmp_path / 'yaw/ann').mkdir(parents=True)
-    for name in ('0000000000000000_9.jpg', 'notes.txt'):  # a crop of an earlier build, and a file of someone's
+    for name in ('0000000000000000_9.jpg', 'holiday.jpg', 'notes.txt'):  # a crop of an earlier build, and others
         (tmp_path / 'yaw/ann' / name).write_text('x')
     yaw_sheet.main(args + ['--labeller', 'ann'])
     page = (tmp_path / 'yaw/ann/index.html').read_text(encoding='utf-8')
     shown = json.loads(page.split('const faces = ', 1)[1].split(';\n', 1)[0])
     assert len(shown) == len(chosen) - 5 and not {(f['imageId'], f['faceId']) for f in shown} & set(done)
     assert sorted(p.name for p in (tmp_path / 'yaw/ann').iterdir()) == sorted(
-        [f['src'] for f in shown] + ['index.html', 'notes.txt'])
+        [f['src'] for f in shown] + ['holiday.jpg', 'index.html', 'notes.txt'])
     assert 'bob' not in page and f'<h2>{tmp_path / "labels" / "yaw-ann.csv"}</h2>' in page
     review = bm.read_csv(tmp_path / 'manifest/review.csv')
     review[3].update(decision='remove', reason='doubtful')
@@ -109,7 +109,7 @@ def test_kappa_matches_a_worked_example():
     assert yaw_agreement.kappa(np.zeros((4, 4))) is None and yaw_agreement.kappa(np.diag([5, 0, 0, 0])) is None
 
 
-def test_agreement_reports_kappa_and_keeps_settled_labels(tmp_path, capsys):
+def test_agreement_reports_kappa_and_keeps_settled_labels(tmp_path, capsys, monkeypatch):
     args = make_manifest(tmp_path) + ['--labellers', *LABELLERS]
     images, faces = manifest_rows(tmp_path)
     chosen = [(f['imageId'], f['faceId']) for f in yaw_sheet.sample(images, faces)]
@@ -119,18 +119,23 @@ def test_agreement_reports_kappa_and_keeps_settled_labels(tmp_path, capsys):
     for face in chosen[:6]:
         bob[face] = 'unclear'
     write_labels(tmp_path, 'ann', ann)
+    with pytest.raises(SystemExit, match='yaw-bob.csv does not exist; once you have both finished'):
+        yaw_agreement.main(args)
     write_labels(tmp_path, 'bob', {face: label for face, label in bob.items() if face != chosen[-1]})
     with pytest.raises(SystemExit, match='1 faces of the sample unlabelled'):
         yaw_agreement.main(args)
     write_labels(tmp_path, 'bob', {**bob, ('removed-in-review', '0'): 'frontal'})
 
+    disagreements_file = tmp_path / 'labels/yaw-disagreements.csv'  # the commit is read before the script writes
+    monkeypatch.setattr(yaw_agreement.run_detect, 'git_commit', lambda: f'written: {disagreements_file.exists()}')
     yaw_agreement.main(args)
     summary = json.loads((tmp_path / 'labels/agreement.json').read_text())  # beside the labels by default
+    assert summary['gitCommit'] == 'written: False'
     assert summary['labelsOutsideSample'] == {'ann': 0, 'bob': 1}
     assert summary['labelsSha256'] == {name: download.sha256_file(tmp_path / f'labels/yaw-{name}.csv')
                                        for name in LABELLERS}
     assert summary['disagreementsSha256'] == download.sha256_file(tmp_path / 'labels/yaw-disagreements.csv')
-    assert summary['numpy'] == np.__version__ and summary['python'] and 'gitCommit' in summary
+    assert summary['numpy'] == np.__version__ and summary['python']
     assert summary['faces'] == len(chosen) and summary['disagreements'] == 6 == summary['unsettled']
     assert summary['observedAgreement'] == pytest.approx(1 - 6 / len(chosen))
     assert 0 < summary['kappa']['low'] <= summary['kappa']['value'] <= summary['kappa']['high'] <= 1

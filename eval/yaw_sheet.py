@@ -166,8 +166,7 @@ def main(argv=None):
         ap.error('--labeller must be lower-case letters, digits and hyphens')
 
     images = {r['imageId']: r for r in build_manifest.read_csv(args.manifest / 'images.csv')}
-    review = build_manifest.read_review(args.manifest / 'review.csv')
-    unreviewed = [i for i in images if review.get(i) != 'keep']
+    unreviewed = build_manifest.not_kept(args.manifest, images)
     if unreviewed:
         sys.exit(f'{len(unreviewed)} of the {len(images)} images in {args.manifest / "images.csv"} have no "keep" in '
                  f'review.csv; the yaw sample is labelled once the reviewed test set is frozen (protocol, part B)')
@@ -177,8 +176,9 @@ def main(argv=None):
     todo = [f for f in chosen if (f['imageId'], f['faceId']) not in existing]
     out = args.out / args.labeller
     out.mkdir(parents=True, exist_ok=True)
-    for old in [*out.glob('*.jpg'), out / 'index.html']:  # no crop of an earlier build stays behind
-        old.unlink(missing_ok=True)
+    for old in out.iterdir():  # no crop of an earlier build stays behind; files of other kinds are left alone
+        if old.name == 'index.html' or re.fullmatch(r'[0-9a-f]{16}_\d+\.jpg', old.name):
+            old.unlink()
     for i in dict.fromkeys(f['imageId'] for f in todo):
         image = transforms.upright(download.image_path(args.images, i, images[i]['url']), int(images[i]['rotation']))
         for face in (f for f in todo if f['imageId'] == i):
