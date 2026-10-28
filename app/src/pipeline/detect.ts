@@ -38,6 +38,8 @@ ort.env.wasm.numThreads = 1;
 const NMS_FLOOR = 0.05;
 
 const sessions = new Map<string | ArrayBuffer, Promise<ort.InferenceSession>>();
+// The SHA-256 of each model as loaded, which every evaluation run records (docs/contracts.md, section 1).
+const digests = new Map<string | ArrayBuffer, string>();
 
 async function createSession(source: string | ArrayBuffer): Promise<ort.InferenceSession> {
   let model = source;
@@ -45,6 +47,12 @@ async function createSession(source: string | ArrayBuffer): Promise<ort.Inferenc
     const response = await fetch(model);
     if (!response.ok) throw new Error(`could not load ${model}: HTTP ${response.status}`);
     model = await response.arrayBuffer();
+  }
+  // crypto.subtle exists only in secure contexts (https, or localhost), so a dev server opened by its
+  // network address on a phone skips it.
+  if (globalThis.crypto?.subtle) {
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', model));
+    digests.set(source, Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join(''));
   }
   const session = await ort.InferenceSession.create(new Uint8Array(model), { executionProviders: ['wasm'] });
   // One run on a blank input, so that nothing is left to load or compile when the first photo comes.
@@ -65,6 +73,11 @@ export function loadDetector(source: string | ArrayBuffer = yunetUrl): Promise<o
     session.catch(() => sessions.delete(source));
   }
   return session;
+}
+
+/** The SHA-256 of the model loaded from source, once loadDetector() has read it. */
+export function modelSha256(source: string | ArrayBuffer = yunetUrl): string | undefined {
+  return digests.get(source);
 }
 
 /** The bitmap's RGBA pixels at full size. */

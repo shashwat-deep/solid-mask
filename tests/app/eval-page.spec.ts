@@ -18,12 +18,26 @@ type SolidMask = {
   info(): { ortVersion: string; backend: string; threads: number; modelSha256: string };
 };
 
-// OpenCV 4.13's FaceDetectorYN with face_detection_yunet_2023mar.onnx, on the test photo shrunk to 480 x 640
-// with INTER_AREA: the face it finds, and the 7 boxes scoring 0.10 or more (the lowest scores 0.1037, the next
-// 0.0826, so the count is not on a knife-edge). Below 0.10 the counts differ by one box at the right edge,
-// where the app's 640 x 640 letterbox and OpenCV's 480 px wide input see different borders.
-const OPENCV_FACE = { x: 1164.3, y: 506.1, w: 744.1, h: 1062.1, score: 0.9436 };
-const OPENCV_BOXES_AT_010 = 7;
+// OpenCV's own YuNet boxes on the test photo, highest score first, written by tests/reference/opencv_yunet.py.
+const OPENCV: Box[] = readFileSync(new URL('../reference/opencv_yunet.txt', import.meta.url), 'utf8')
+  .split('\n')
+  .filter((line) => line.trim() && !line.startsWith('#'))
+  .map((line) => {
+    const [x, y, w, h, score] = line.trim().split(/\s+/).map(Number);
+    return { x, y, w, h, score };
+  });
+// The boxes are compared down to 0.10, where there are 7 (the lowest scores 0.1037, the next 0.0827), so the set is
+// not on a knife-edge. Below that, OpenCV's boxes differ from the app's at the right edge, where the app's
+// 640 x 640 letterbox and OpenCV's 480 px wide input see different borders.
+const CLEAR_SCORE = 0.1;
+// The runner uses Chromium (docs/contracts.md, section 3), and there the boxes must match to 0.5 px. Another
+// engine may decode the JPEG a little differently (WebKit on macOS uses Apple's ImageIO), so it gets 2 px.
+const tolerance = (browserName: string) => (browserName === 'chromium' ? { px: 0.5, score: 0.0005 } : { px: 2, score: 0.002 });
+
+function expectNear(actual: Box, expected: Box, bound: { px: number; score: number }, what: string): void {
+  for (const k of ['x', 'y', 'w', 'h'] as const) expect(Math.abs(actual[k] - expected[k]), `${what} ${k}`).toBeLessThanOrEqual(bound.px);
+  expect(Math.abs(actual.score - expected.score), `${what} score`).toBeLessThanOrEqual(bound.score);
+}
 // The model's SHA-256 in the OpenCV Zoo, as fetch-model.ts checks it.
 const MODEL_SHA256 = '8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4';
 // The options eval/run_detect.py passes for YuNet in the single setting.
@@ -79,17 +93,17 @@ function storedTurned(source: Uint8Array): Uint8Array {
   return Uint8Array.from([...encoded.subarray(0, 2), ...app1, ...encoded.subarray(2)]);
 }
 
-test('the eval page finds the face OpenCV finds, renders as the app saves, and reports its versions', async ({ page }) => {
+test('the eval page finds the boxes OpenCV finds, renders as the app saves, and reports its versions', async ({ page, browserName }) => {
   const photo = await poisonedPhoto();
   const result = await runPage(page, new Uint8Array(await readFile(photo.sourcePath)));
 
   expect(result.info, 'info()').toEqual({ ortVersion: ORT_VERSION, backend: 'wasm', threads: 1, modelSha256: MODEL_SHA256 });
   expect(result.size, 'decoded size').toEqual([photo.width, photo.height]);
 
-  const [face] = result.boxes;
-  for (const k of ['x', 'y', 'w', 'h'] as const) expect(Math.abs(face[k] - OPENCV_FACE[k]), `face ${k}`).toBeLessThanOrEqual(0.5);
-  expect(Math.abs(face.score - OPENCV_FACE.score), 'face score').toBeLessThanOrEqual(0.0005);
-  expect(result.boxes.filter((b) => b.score >= 0.1), 'boxes scoring 0.10 or more').toHaveLength(OPENCV_BOXES_AT_010);
+  const expected = OPENCV.filter((b) => b.score >= CLEAR_SCORE);
+  const found = result.boxes.filter((b) => b.score >= CLEAR_SCORE);
+  expect(found, `boxes scoring ${CLEAR_SCORE} or more`).toHaveLength(expected.length);
+  expected.forEach((box, i) => expectNear(found[i], box, tolerance(browserName), `box ${i + 1}`));
 
   expect(facesCoveredProblems(result.copy, photo.faces), 'faces left uncovered by render()').toEqual([]);
   expect(hiddenDataProblems(result.copy), 'hidden data in the copy render() encodes').toEqual([]);
@@ -100,12 +114,21 @@ test('the eval page turns a photo stored turned upright by its EXIF orientation,
   const result = await runPage(page, storedTurned(new Uint8Array(await readFile(photo.sourcePath))));
 
   expect(result.size, 'decoded size').toEqual([photo.width, photo.height]);
-  // The turned copy was encoded again, nearly losslessly, which moves the box by under 1 px; allow 2. A turn
-  // the wrong way, or none, would put the face hundreds of pixels away.
-  const [face] = result.boxes;
-  for (const k of ['x', 'y', 'w', 'h'] as const) expect(Math.abs(face[k] - OPENCV_FACE[k]), `face ${k}`).toBeLessThanOrEqual(2);
-  expect(Math.abs(face.score - OPENCV_FACE.score), 'face score').toBeLessThanOrEqual(0.001);
+  // The turned copy was encoded again, nearly losslessly, which moves the face's box by under 1 px; allow 2. A
+  // turn the wrong way, or none, would put the face hundreds of pixels away.
+  expectNear(result.boxes[0], OPENCV[0], { px: 2, score: 0.002 }, 'face');
   expect(facesCoveredProblems(result.copy, photo.faces), 'faces left uncovered by render()').toEqual([]);
+});
+
+test('a reloaded eval page refuses to start, so a run cannot go on under changed code', async ({ page }) => {
+  // Vite reloads the page when a source file changes; the runner must then fail, not go on.
+  const ready = () => page.evaluate(() => (window as unknown as { solidMask?: unknown }).solidMask !== undefined);
+  await page.goto(EVAL_PAGE);
+  await expect.poll(ready, { message: 'the page is ready after opening it', timeout: 120_000 }).toBe(true);
+  const refusal = page.waitForEvent('pageerror');
+  await page.reload();
+  expect((await refusal).message, 'the reloaded page says why it stopped').toContain('reloaded');
+  expect(await ready(), 'window.solidMask after the reload').toBe(false);
 });
 
 test.describe('the deployed build', () => {

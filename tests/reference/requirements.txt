@@ -1,0 +1,4 @@
+# For opencv_yunet.py only, which writes opencv_yunet.txt; the tests read that file and need none of these.
+# OpenCV 4.x, since 5.x runs this fixed-size model through a different engine. Licences: Apache-2.0, BSD-3-Clause.
+opencv-python-headless==4.13.0.92
+numpy==2.4.4
