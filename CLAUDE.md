@@ -76,6 +76,9 @@ uv venv --python 3.13 .venv && uv pip sync --python .venv/bin/python eval/requir
 .venv/bin/python eval/review_sheet.py                            # page for reviewing the images not yet reviewed
 .venv/bin/python eval/build_manifest.py                          # redraw the test set after a round of the review
 .venv/bin/python eval/face_luma.py                               # mean luma per face, after any manifest change
+.venv/bin/python eval/check_files.py SAVED_FILES...                # check E2: saved files, segment by segment
+.venv/bin/python eval/render_copies.py RUN.jsonl --pad P --threshold T --page URL   # check E3: masked and plain copies
+.venv/bin/python eval/hash_distance.py data/rendered/RENDER_ID       # check E3: PDQ and pHash distances
 .venv/bin/python eval/run_detect.py --page URL                   # detections into results/detections/ (--page stub: data/stub-runs/)
 .venv/bin/python eval/run_detect.py --page URL --transforms none,rot45,dark2   # also rotated and darkened copies
 .venv/bin/python eval/check_colour.py                             # the transforms' sRGB images match Chromium's

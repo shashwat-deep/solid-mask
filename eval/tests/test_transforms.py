@@ -1,6 +1,6 @@
 """Tests of the image transforms in transforms.py: rotation, darkening with sensor noise, and the upright sRGB image
 they start from."""
-import io
+import base64, io
 import numpy as np
 import pytest
 from PIL import Image, ImageCms
@@ -91,6 +91,66 @@ def test_upright_converts_like_chromium(tmp_path):
     assert np.array_equal(np.asarray(turned), np.asarray(Image.open(tmp_path / 'plain.jpg').rotate(90, expand=True)))
 
 
+XMP_ORIENTATION_6 = (b'<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF '
+                     b'xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description '
+                     b'xmlns:tiff="http://ns.adobe.com/tiff/1.0/" tiff:Orientation="6"/></rdf:RDF></x:xmpmeta>')
+
+
+def exif_data(orientation=None):
+    """EXIF data with a camera make and, unless orientation is None, an orientation."""
+    exif = Image.Exif()
+    exif[0x010F] = 'Test camera'
+    if orientation is not None:
+        exif[0x0112] = orientation
+    return exif.tobytes()
+
+
+def after_jfif(data, *payloads):
+    """The JPEG with an APP1 segment for each payload after its JFIF segment."""
+    at = 4 + int.from_bytes(data[4:6], 'big')
+    return data[:at] + b''.join(b'\xff\xe1' + (len(p) + 2).to_bytes(2, 'big') + p for p in payloads) + data[at:]
+
+
+def orientation_files(folder):
+    """A 40 x 30 photo with no orientation tag; with EXIF orientation 1, and 6; with XMP orientation 6; with a
+    first EXIF segment without an orientation and a second with 6; and with EXIF data that cannot be read."""
+    image = Image.new('RGB', (40, 30), (10, 20, 30))
+    plain = jpeg(image).getvalue()
+    files = {'plain': plain, 'one': jpeg(image, exif=exif_data(1)).getvalue(),
+             'six': jpeg(image, exif=exif_data(6)).getvalue(), 'xmp': jpeg(image, xmp=XMP_ORIENTATION_6).getvalue(),
+             'second': after_jfif(plain, exif_data(), exif_data(6)), 'damaged': after_jfif(plain, b'Exif\x00\x00no tiff')}
+    for name, data in files.items():
+        files[name] = folder / f'{name}.jpg'
+        files[name].write_bytes(data)
+    return files
+
+
+def test_upright_refuses_a_file_with_an_exif_orientation(tmp_path):
+    """XMP's orientation, which Pillow's getexif() also reports, and a second EXIF segment do not count."""
+    files = orientation_files(tmp_path)
+    assert [transforms.exif_orientation(path) for path in files.values()] == [None, 1, 6, None, None, 'unreadable']
+    for name in ('plain', 'one', 'xmp', 'second'):
+        assert transforms.upright(files[name], 90).size == (30, 40)
+    for name, orientation in (('six', 6), ('damaged', 'unreadable')):
+        with pytest.raises(ValueError, match=f'EXIF orientation is {orientation}'):
+            transforms.upright(files[name], 0)
+
+
+def test_chromium_turns_an_image_by_its_first_exif_orientation_only(chromium, tmp_path):
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        page = browser.new_page()
+        for name, path in orientation_files(tmp_path).items():
+            size = page.evaluate("""async (data) => {
+                const blob = await (await fetch('data:image/jpeg;base64,' + data)).blob();
+                const bitmap = await createImageBitmap(blob);
+                return [bitmap.width, bitmap.height];
+            }""", base64.b64encode(path.read_bytes()).decode())
+            assert size == ([30, 40] if name == 'six' else [40, 30]), name
+        browser.close()
+
+
 def test_check_colour_agrees_with_chromium_on_each_kind_of_profile(chromium, tmp_path, capsys):
     rgb = Image.fromarray(np.random.default_rng(3).integers(0, 256, (24, 40, 3), dtype=np.uint8), 'RGB')
     srgb = ImageCms.ImageCmsProfile(ImageCms.createProfile('sRGB')).tobytes()
@@ -108,3 +168,8 @@ def test_check_colour_agrees_with_chromium_on_each_kind_of_profile(chromium, tmp
     check_colour.main(['--manifest', str(tmp_path / 'manifest'), '--images', str(tmp_path / 'images')])
     out = capsys.readouterr().out
     assert '5 images of 4 kinds' in out and 'sRGB built-in (L, profile RGB)' in out
+    (tmp_path / 'images/six.jpg').write_bytes(jpeg(rgb, exif=exif_data(6)).getvalue())
+    bm.write_csv(tmp_path / 'manifest/images.csv', ['imageId', 'url', 'rotation'],
+                 rows + [{'imageId': 'six', 'url': 'https://example.org/six.jpg', 'rotation': 0}])
+    with pytest.raises(SystemExit, match='EXIF orientation is 6'):  # before Chromium starts
+        check_colour.main(['--manifest', str(tmp_path / 'manifest'), '--images', str(tmp_path / 'images')])

@@ -1,21 +1,26 @@
 """Compare two authors' yaw labels: Cohen's kappa, the confusion table, and the faces to settle together.
 
-    python eval/yaw_agreement.py [--labellers shashwat pratyush] [--out results/yaw-agreement.json] [--write]
+    python eval/yaw_agreement.py [--labellers shashwat pratyush] [--write]
 
-Reads eval/labels/yaw-<labeller>.csv (yaw_sheet.py) for both authors; each must label every face of the current
-sample. Labels of faces outside it (their image was removed in the review) are counted and left out.
+Reads results/yaw/yaw-<labeller>.csv for both authors: the files yaw_sheet.py's page makes, which stay in data/yaw/
+until both authors have finished and are then committed together under results/yaw/. Each must label every face of
+the current sample. Labels of faces outside it are counted and left out.
 Reports Cohen's kappa over the four labels, with a 95% confidence interval from the bootstrap over images that
 score.py uses (10,000 resamples of the images, numpy's default_rng(0), percentile interval); kappa over the faces
 neither author called unclear; the observed agreement; each author's counts; and the confusion table. Writes the
-faces they disagree on to eval/labels/yaw-disagreements.csv, with a column of labels named after each author (in
-alphabetical order) and a `settled` column, keeping any settled labels already filled in. Once
-the authors have filled the `settled` column together, --write puts the final labels into the yaw column of
+faces they disagree on to results/yaw/yaw-disagreements.csv, with a column of labels named after each author (in
+alphabetical order) and a `settled` column, keeping any settled labels already filled in. The summary goes to
+results/yaw/agreement.json (--out), with the SHA-256 of both label files, of the disagreements file and of
+images.csv and faces.csv as read, the git commit, and the versions of Python and numpy. Once the authors have
+filled the `settled` column together, --write puts the final labels into the yaw column of
 eval/manifest/faces.csv: the shared label where they agree, the settled one where they did not.
 """
-import argparse, json, sys
+import argparse, json, platform, sys
 from pathlib import Path
 import numpy as np
 import build_manifest
+import download
+import run_detect
 import score
 import yaw_sheet
 
@@ -57,14 +62,20 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--labellers', nargs=2, default=['shashwat', 'pratyush'])
     ap.add_argument('--manifest', type=Path, default=ROOT / 'eval/manifest')
-    ap.add_argument('--labels', type=Path, default=ROOT / 'eval/labels')
-    ap.add_argument('--out', type=Path, help='write the summary as JSON here')
+    ap.add_argument('--labels', type=Path, default=ROOT / 'results/yaw')
+    ap.add_argument('--out', type=Path, help='where the JSON summary goes (default: agreement.json beside the labels)')
     ap.add_argument('--write', action='store_true', help='put the final labels into faces.csv')
     args = ap.parse_args(argv)
 
+    commit = run_detect.git_commit()  # before this script writes anything into the repository
+    manifest_sha = {name: download.sha256_file(args.manifest / name) for name in ('images.csv', 'faces.csv')}
     images = {r['imageId']: r for r in build_manifest.read_csv(args.manifest / 'images.csv')}
     faces = build_manifest.read_csv(args.manifest / 'faces.csv')
     chosen = [(f['imageId'], f['faceId']) for f in yaw_sheet.sample(images, faces)]
+    for name in args.labellers:
+        if not (args.labels / f'yaw-{name}.csv').exists():
+            sys.exit(f'{args.labels / f"yaw-{name}.csv"} does not exist; once you have both finished, copy both files '
+                     f'from data/yaw/ into {args.labels} and commit them together')
     first, second = (yaw_sheet.read_labels(args.labels / f'yaw-{name}.csv') for name in args.labellers)
     outside = {}
     for name, labels in zip(args.labellers, (first, second)):
@@ -103,11 +114,15 @@ def main(argv=None):
     build_manifest.write_csv(path, ['imageId', 'faceId', *names, 'settled'], rows)
     summary['disagreements'] = len(rows)
     summary['unsettled'] = sum(not r['settled'] for r in rows)
+    summary.update({
+        'labelsSha256': {name: download.sha256_file(args.labels / f'yaw-{name}.csv') for name in args.labellers},
+        'disagreementsSha256': download.sha256_file(path), 'manifestSha256': manifest_sha,
+        'gitCommit': commit, 'python': platform.python_version(), 'numpy': np.__version__})
 
     text = json.dumps(summary, indent=1)
-    if args.out:
-        args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(text + '\n', encoding='utf-8')
+    out = args.out or args.labels / 'agreement.json'
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text + '\n', encoding='utf-8')
     print(text)
 
     if args.write:

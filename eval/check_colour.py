@@ -56,6 +56,7 @@ def main(argv=None):
     for i in sorted(rows):
         kinds.setdefault(kind(files[i]), []).append(i)
     chosen = [(k, i) for k, ids in sorted(kinds.items()) for i in ids[:args.per_kind]]
+    run_detect.check_orientations([rows[i] for _, i in chosen], files)
 
     def route(request_route):
         name = request_route.request.url.rsplit('/', 1)[-1]
