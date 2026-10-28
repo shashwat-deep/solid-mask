@@ -171,7 +171,7 @@ def load_manifest(folder):
             faces[r['imageId']].append(face)
     luma = face_luma.read_luma(folder / 'luma.csv') if (folder / 'luma.csv').exists() else {}
     keys = {(f['imageId'], f['faceId']) for image_faces in faces.values() for f in image_faces}
-    if luma and set(luma) != keys:
+    if (folder / 'luma.csv').exists() and set(luma) != keys:
         sys.exit(f'{folder / "luma.csv"} does not match faces.csv; run eval/face_luma.py')
     for image_faces in faces.values():
         for f in image_faces:

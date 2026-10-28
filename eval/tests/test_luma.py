@@ -80,3 +80,25 @@ def test_committed_luma_matches_the_committed_faces():
     faces = {(f['imageId'], f['faceId']) for f in bm.read_csv(MANIFEST / 'faces.csv')}
     luma = face_luma.read_luma(MANIFEST / 'luma.csv')
     assert set(luma) == faces and all(0 <= v <= 255 for v in luma.values())
+
+
+def test_darkest_tenth_breaks_ties_by_image_and_face_id_and_refuses_an_empty_file(tmp_path):
+    """10 faces, so the darkest tenth is one face; images 05 and 02 tie for the lowest luma, and 02 comes first."""
+    (tmp_path / 'manifest').mkdir()
+    ids = [f'{k:02d}' for k in range(10)]
+    bm.write_csv(tmp_path / 'manifest/images.csv', bm.IMAGE_COLUMNS,
+                 [{'imageId': i, 'split': 'report', 'width': 100, 'height': 100, 'rotation': 0} for i in ids])
+    bm.write_csv(tmp_path / 'manifest/faces.csv', bm.FACE_COLUMNS,
+                 [{'imageId': i, 'faceId': 0, 'x': 10, 'y': 10, 'w': 30, 'h': 30, 'isOccluded': 0, 'isTruncated': 0,
+                   'isDepiction': 0, 'yaw': ''} for i in ids])
+    bm.write_csv(tmp_path / 'manifest/luma.csv', face_luma.LUMA_COLUMNS,
+                 [{'imageId': i, 'faceId': 0, 'meanLuma': 20 if i in ('02', '05') else 90} for i in ids])
+    run = [{'run': 'test'}] + [{'imageId': i, 'transform': 'none', 'inputSize': 640, 'tiling': {'kind': 'none'},
+                                'boxes': []} for i in ids]
+    (tmp_path / 'run.jsonl').write_text(''.join(json.dumps(line) + '\n' for line in run))
+    args = [str(tmp_path / 'run.jsonl'), '--pad', '0', '--threshold', '0.5', '--manifest', str(tmp_path / 'manifest')]
+    score.main(args + ['--faces', str(tmp_path / 'f.csv')])
+    assert [r['imageId'] for r in bm.read_csv(tmp_path / 'f.csv') if r['darkestTenth'] == 'True'] == ['02']
+    bm.write_csv(tmp_path / 'manifest/luma.csv', face_luma.LUMA_COLUMNS, [])
+    with pytest.raises(SystemExit, match='does not match faces.csv'):
+        score.main(args)
