@@ -13,7 +13,8 @@ The scripts here measure how often the tool leaves a face uncovered, following [
 - `run_detect.py`: runs the detector on the test images in headless Chromium, through the app's eval page, and writes a detections file.
 - `stub/`: a stand-in for the app's eval page with the same interface, used until that page exists and by the tests.
 - `score.py`: scores a detections file against the manifest: missed faces, faces covered completely, detection recall and false masks, each with a 95% confidence interval, and the operating point.
-- `transforms.py`: the rotation and darkening transforms. So far it holds the geometry of a rotation, which `score.py` uses.
+- `transforms.py`: the rotation and darkening transforms, their parameters, and the geometry of a rotation, which `score.py` uses.
+- `check_colour.py`: checks that the images the transforms start from have the pixels Chromium decodes.
 - `tests/`: tests for these scripts (pytest).
 
 The columns follow [`docs/contracts.md`](../docs/contracts.md), section 6.
@@ -39,11 +40,13 @@ uv pip sync --python .venv/bin/python eval/requirements.txt
 .venv/bin/python -m playwright install --only-shell chromium
 .venv/bin/python eval/run_detect.py --page http://localhost:5173/eval.html
 .venv/bin/python eval/run_detect.py --page http://localhost:5173/eval.html --tiles 1920,0.25
+.venv/bin/python eval/run_detect.py --page http://localhost:5173/eval.html --split report \
+    --transforms none,rot0,rot15,rot30,rot45,rot90,rot135,rot180,dark1,dark2,dark3,dark4
 ```
 
 The app's eval page does not exist yet. Until it does, the default `--page stub` uses `stub/`, which has the same interface but whose "detector" only finds solid magenta rectangles; the tests draw their made-up faces that way. A stub run measures nothing, so it goes to `data/stub-runs/`, never to `results/`.
 
-The runner gives each image to the page itself, on the page's own address, so nothing is sent anywhere, and it stops the run if the page asks for anything from another site. Open Images stores a few images turned; the runner adds an EXIF orientation tag to those, so the app's decoding turns them upright as it would a phone photo, and it checks every decoded size against the manifest. Each run writes `results/detections/<run-id>.jsonl` (section 4 of the contract) and `<run-id>.run_info.json`, with the versions, hashes and timings. Two runs with the same versions must give the same `boxesSha256`, the SHA-256 of every line after the run line.
+The runner gives each image to the page itself, on the page's own address, so nothing is sent anywhere, and it stops the run if the page asks for anything from another site. Open Images stores a few images turned; the runner adds an EXIF orientation tag to those, so the app's decoding turns them upright as it would a phone photo, and it checks every decoded size against the manifest. With `--transforms`, the runner also makes each rotated or darkened copy (`transforms.py`, protocol part B) just before the page asks for it, and keeps none of them. It starts from the image converted to sRGB by its ICC profile, as Chromium converts it; `check_colour.py` checks that the two agree within 1 for test images with each kind of profile, and is worth rerunning after updating Chromium or Pillow. Each run writes `results/detections/<run-id>.jsonl` (section 4 of the contract) and `<run-id>.run_info.json`, with the versions, hashes and timings. Two runs with the same versions must give the same `boxesSha256`, the SHA-256 of every line after the run line. `servedSha256` covers every image the runner gave the page, so when two runs differ it shows whether their images did.
 
 ## Scoring
 

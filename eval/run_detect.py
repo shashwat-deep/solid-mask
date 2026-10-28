@@ -1,6 +1,7 @@
 """Run the face detector on the test images in headless Chromium and write a detections file.
 
     python eval/run_detect.py [--page stub | --page URL] [--split report] [--limit N] [--tiles 1920,0.25]
+                              [--transforms none,rot15,dark2]
 
 Follows docs/contracts.md, sections 3 and 4. Playwright opens the eval page in headless Chromium and calls its
 window.solidMask.decode() and detectFaces() for each image, so the boxes come from the shipped decoding,
@@ -15,18 +16,26 @@ EXIF orientation tag added, so the page's createImageBitmap(..., {imageOrientati
 as it does a phone photo; the runner checks each decoded size against the upright size in the manifest. Before it
 starts, it checks every image file against its SHA-256 in the manifest.
 
+--transforms lists the transforms to run, each over every image: none, rot<degrees> and dark<EV>
+(docs/eval-protocol.md, part B, "Breakdowns"). The runner makes each rotated or darkened image with
+eval/transforms.py just before the page asks for it, as a PNG, and keeps none of them.
+
 Writes <out>/<run-id>.jsonl (out is results/detections, or data/stub-runs for the stub, which is never written
 into results/): the run line, then one line per image with every box scoring 0.05 or more (docs/
-contracts.md, section 4). <out>/<run-id>.run_info.json records the versions, hashes, timings and boxesSha256, the
-SHA-256 of the lines after the run line, which two runs on the same versions must share. A run that stops early
-leaves only <run-id>.jsonl.part. Only the transform "none" is supported so far.
+contracts.md, section 4). <out>/<run-id>.run_info.json records the versions, hashes, timings, boxesSha256, the
+SHA-256 of the lines after the run line, which two runs on the same versions must share, and servedSha256, a
+SHA-256 over every image served, which tells whether two runs gave the page the same images. The lines follow the
+manifest, each image with its transforms in the order of --transforms. A run that stops early leaves only
+<run-id>.jsonl.part.
 """
 import argparse, datetime, hashlib, json, platform, statistics, subprocess, sys, time
 from importlib import metadata
 from pathlib import Path
 from urllib.parse import urlsplit
+from PIL import features
 import build_manifest
 import download
+import transforms
 
 ROOT = Path(__file__).resolve().parents[1]
 STUB = Path(__file__).resolve().parent / 'stub'
@@ -86,6 +95,21 @@ def sha256(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def prepare(row, path, transform, upright=None):
+    """(file name, content type, bytes, expected decoded size) of one manifest image under one transform. upright
+    is transforms.upright() of the image, if already made."""
+    width, height, rotation = int(row['width']), int(row['height']), int(row['rotation'])
+    if transform == 'none':
+        return (row['imageId'] + path.suffix, CONTENT_TYPES.get(path.suffix.lower()),
+                with_orientation(path.read_bytes(), rotation), (width, height))
+    kind, value = transforms.parse(transform)
+    if upright is None:
+        upright = transforms.upright(path, rotation)
+    image = transforms.apply(upright, transform, row['imageId'])
+    expected = transforms.rotated_size(width, height, value) if kind == 'rot' else (width, height)
+    return f'{row["imageId"]}.{transform}.png', 'image/png', transforms.png(image), expected
+
+
 def git_commit():
     try:
         commit = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=ROOT, capture_output=True, text=True,
@@ -104,6 +128,7 @@ def main(argv=None):
     ap.add_argument('--input-size', type=int, default=640)
     ap.add_argument('--tiles', metavar='LONG_SIDE,OVERLAP', help='the tiled setting, for example 1920,0.25')
     ap.add_argument('--nms-iou', type=float, help='default: 0.3 for yunet, 0.5 for yolo5face')
+    ap.add_argument('--transforms', default='none', help='comma-separated: none, rot<degrees>, dark<EV>')
     ap.add_argument('--split', choices=('tune', 'report', 'all'), default='all')
     ap.add_argument('--limit', type=int, help='only the first N images of the split, in manifest order')
     ap.add_argument('--manifest', type=Path, default=ROOT / 'eval/manifest')
@@ -126,6 +151,14 @@ def main(argv=None):
         tiling = {'kind': 'tiles', 'longSide': int(long_side), 'overlap': float(overlap)}
     else:
         tiling = {'kind': 'none'}
+    transform_list = args.transforms.split(',')
+    try:
+        for transform in transform_list:
+            transforms.parse(transform)
+    except ValueError as e:
+        ap.error(str(e))
+    if len(set(transform_list)) < len(transform_list):
+        ap.error('--transforms names a transform twice')
     nms_iou = args.nms_iou if args.nms_iou is not None else NMS_IOU[args.model]
     options = {'model': args.model, 'inputSize': args.input_size, 'tiling': tiling,
                'scoreThreshold': RUNNER_THRESHOLD, 'nmsIoU': nms_iou}
@@ -139,13 +172,11 @@ def main(argv=None):
         sys.exit(f'{len(bad)} images are missing or differ from the manifest, for example {bad[0]}; '
                  f'run eval/download.py')
     for r in rows:  # fail here, not inside the browser, on an image that cannot be served upright
-        if int(r['rotation']):
+        if int(r['rotation']) and 'none' in transform_list:
             try:
                 with_orientation(files[r['imageId']].read_bytes(), int(r['rotation']))
             except (ValueError, IndexError) as e:
                 sys.exit(f'{r["imageId"]}: cannot add an EXIF orientation tag: {e}')
-    names = {r['imageId']: r['imageId'] + files[r['imageId']].suffix for r in rows}
-    served = {names[r['imageId']]: r for r in rows}
 
     setting = 'single' if tiling['kind'] == 'none' else f'tiles{tiling["longSide"]}-{tiling["overlap"]}'
     run_id = args.run_id or (f'{datetime.date.today().isoformat()}-{"stub" if stub else "app"}-{args.model}-'
@@ -159,6 +190,7 @@ def main(argv=None):
         sys.exit(f'{args.out / run_id}.jsonl exists; every run is kept, so choose another --run-id')
 
     blocked = []
+    pending = {}  # the one image the page may fetch next: file name -> (content type, bytes)
 
     def route(request_route):
         url = request_route.request.url
@@ -167,12 +199,10 @@ def main(argv=None):
             blocked.append(url)
             return request_route.abort('blockedbyclient')
         if here.path.startswith(IMAGE_PATH):
-            row = served.get(here.path[len(IMAGE_PATH):])
-            if row is None:
+            entry = pending.get(here.path[len(IMAGE_PATH):])
+            if entry is None:
                 return request_route.fulfill(status=404)
-            path = files[row['imageId']]
-            return request_route.fulfill(status=200, content_type=CONTENT_TYPES.get(path.suffix.lower()),
-                                         body=with_orientation(path.read_bytes(), int(row['rotation'])))
+            return request_route.fulfill(status=200, content_type=entry[0], body=entry[1])
         if stub:
             file = STUB / here.path.lstrip('/')
             if file.parent != STUB or not file.is_file():
@@ -181,7 +211,7 @@ def main(argv=None):
         return request_route.continue_()
 
     from playwright.sync_api import sync_playwright
-    started, lines, times = datetime.datetime.now(datetime.timezone.utc), [], []
+    started, lines, times, served = datetime.datetime.now(datetime.timezone.utc), [], [], hashlib.sha256()
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
         try:
@@ -192,17 +222,23 @@ def main(argv=None):
             page.wait_for_function('() => window.solidMask !== undefined', timeout=120_000)
             info = page.evaluate('() => window.solidMask.info()')
             for row in rows:
-                t0 = time.perf_counter()
-                url = f'{origin}{IMAGE_PATH}{names[row["imageId"]]}'
-                result = page.evaluate(DETECT, {'url': url, 'options': options})
-                times.append(1000 * (time.perf_counter() - t0))
-                if blocked:
-                    sys.exit(f'the page asked for another origin, so the run stops: {blocked[0]}')
-                if (result['width'], result['height']) != (int(row['width']), int(row['height'])):
-                    sys.exit(f'{row["imageId"]} decoded at {result["width"]} x {result["height"]}, but the manifest '
-                             f'says the upright image is {row["width"]} x {row["height"]}')
-                lines.append({'imageId': row['imageId'], 'transform': 'none', 'inputSize': args.input_size,
-                              'tiling': tiling, 'boxes': result['boxes']})
+                path = files[row['imageId']]
+                upright = None if transform_list == ['none'] else transforms.upright(path, int(row['rotation']))
+                for transform in transform_list:
+                    name, content_type, image, expected = prepare(row, path, transform, upright)
+                    served.update(f'{name} {sha256(image)}\n'.encode())
+                    pending.clear()
+                    pending[name] = (content_type, image)
+                    t0 = time.perf_counter()
+                    result = page.evaluate(DETECT, {'url': f'{origin}{IMAGE_PATH}{name}', 'options': options})
+                    times.append(1000 * (time.perf_counter() - t0))
+                    if blocked:
+                        sys.exit(f'the page asked for another origin, so the run stops: {blocked[0]}')
+                    if (result['width'], result['height']) != expected:
+                        sys.exit(f'{row["imageId"]} ({transform}) decoded at {result["width"]} x {result["height"]}, '
+                                 f'but it should be {expected[0]} x {expected[1]}')
+                    lines.append({'imageId': row['imageId'], 'transform': transform, 'inputSize': args.input_size,
+                                  'tiling': tiling, 'boxes': result['boxes']})
             page.close(run_before_unload=True)  # so a request made while the page unloads is checked too
             browser_version = browser.version
         finally:
@@ -222,9 +258,9 @@ def main(argv=None):
     part.replace(args.out / f'{run_id}.jsonl')
     run_info = {
         'run': run_id, 'page': args.page, 'detectOptions': options, 'split': args.split, 'limit': args.limit,
-        'images': len(rows), 'boxes': sum(len(line['boxes']) for line in lines),
+        'transforms': transform_list, 'images': len(rows), 'boxes': sum(len(line['boxes']) for line in lines),
         'detectionsSha256': download.sha256_file(args.out / f'{run_id}.jsonl'),
-        'boxesSha256': sha256(body.encode()), 'manifestSha256': {
+        'boxesSha256': sha256(body.encode()), 'servedSha256': served.hexdigest(), 'manifestSha256': {
             name: download.sha256_file(args.manifest / name) for name in ('images.csv', 'faces.csv')},
         'pageInfo': info, 'started': started.isoformat(timespec='seconds'),
         'finished': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
@@ -232,8 +268,12 @@ def main(argv=None):
         'gitCommit': git_commit(), 'python': platform.python_version(), 'platform': platform.platform(),
         'playwright': metadata.version('playwright'), 'browser': browser_version,
     }
+    if transform_list != ['none']:
+        run_info['transformParameters'] = {**transforms.parameters(), 'pillow': metadata.version('pillow'),
+                                           'numpy': metadata.version('numpy'),
+                                           'littlecms': features.version('littlecms2')}
     (args.out / f'{run_id}.run_info.json').write_text(json.dumps(run_info, indent=1) + '\n', encoding='utf-8')
-    print(f'{len(rows)} images, {run_info["boxes"]} boxes: {args.out / run_id}.jsonl')
+    print(f'{len(rows)} images x {len(transform_list)} transforms, {run_info["boxes"]} boxes: {args.out / run_id}.jsonl')
 
 
 if __name__ == '__main__':

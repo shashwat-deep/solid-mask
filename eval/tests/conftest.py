@@ -5,6 +5,17 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # the scripts in eval/ import each other by name
 
 
+@pytest.fixture(scope='session')
+def chromium():
+    """Skips the test when Playwright has no Chromium to launch."""
+    playwright = pytest.importorskip('playwright.sync_api')
+    try:
+        with playwright.sync_playwright() as pw:
+            pw.chromium.launch().close()
+    except playwright.Error as e:
+        pytest.skip(f'no Chromium for Playwright (python -m playwright install --only-shell chromium): {e}')
+
+
 @pytest.fixture
 def site(tmp_path):
     """A local HTTP server for the folder tmp_path/site. Yields (base URL, folder, list of requested paths)."""
