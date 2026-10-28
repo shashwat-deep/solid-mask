@@ -86,6 +86,8 @@ def main(argv=None):
     if stub and (ROOT / 'results') in [out.resolve(), *out.resolve().parents]:
         ap.error('copies rendered by the stub measure nothing, so their report never goes into results/')
 
+    if download.sha256_file(args.manifest / 'images.csv') != info['manifestSha256']:
+        sys.exit(f'{args.manifest / "images.csv"} has changed since these copies were rendered; render them again')
     manifest = {r['imageId']: r for r in build_manifest.read_csv(args.manifest / 'images.csv')}
     rows = []
     for i, entry in sorted(info['images'].items()):

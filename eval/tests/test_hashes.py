@@ -60,7 +60,7 @@ def test_hash_image_shrinks_to_512_keeping_the_shape():
 def test_pdq_matches_metas_reference_hashes(tmp_path):
     """The eight images of Meta's PDQ regression test, with the hashes its C++ reference prints. The C++ tool
     stretches an image larger than 512 pixels to 512 x 512 by nearest neighbour first; given those pixels, the hash
-    must be the very same."""
+    must be the very same. The images are downloaded once into data/pdq-reference/, which git ignores, and reused."""
     folder = ROOT / 'data/pdq-reference'
     rows = bm.read_csv(REFERENCE)
     done, failed = download.fetch_all([(r['file'], r['url'], folder / r['file'], r['sha256']) for r in rows])
@@ -137,6 +137,10 @@ def test_hash_distance_reports_the_protocol_numbers(chromium, tmp_path, monkeypa
     with pytest.raises(SystemExit):  # a stub's copies never report into results/
         hash_distance.main([str(folder), '--manifest', args[1], '--images', args[3],
                             '--out', str(ROOT / 'results/privacy/e3-test.json')])
+    rows = bm.read_csv(Path(args[1]) / 'images.csv')
+    bm.write_csv(Path(args[1]) / 'images.csv', list(rows[0]), rows[:-1])  # the manifest changes after rendering
+    with pytest.raises(SystemExit, match='render them again'):
+        hash_distance.main([str(folder), '--manifest', args[1], '--images', args[3]])
 
 
 def test_masked_share_counts_overlapping_masks_once():

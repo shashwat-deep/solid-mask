@@ -7,7 +7,8 @@ For each image of the split in the detections file (transform none), the masks a
 threshold, grown by the padding and rounded outward to whole pixels as score.py and the app do (docs/contracts.md,
 section 2). The eval page decodes the image (served as run_detect.py serves it) and its render() (section 3) encodes
 two copies exactly as the app saves: one with the masks and one without, the control. They are written to
-<out>/<render-id>/<imageId>.masked.jpg and .plain.jpg, with render_info.json: the masks of every image, the
+<out>/<render-id>/<imageId>.masked.jpg and .plain.jpg (through <render-id>.part/ until the last one is
+written), with render_info.json: the masks of every image, the
 parameters, the SHA-256 of the detections file and of every copy, and the versions. The copies are pictures of the
 test images, so they stay in data/, which git ignores. With a real eval page, only images that review.csv keeps are
 rendered.
@@ -72,12 +73,17 @@ def main(argv=None):
     if bad:
         sys.exit(f'{len(bad)} images are missing or differ from the manifest, for example {bad[0]}; run eval/download.py')
     run_detect.require_review(rows, args.manifest, stub)
+    run_detect.check_orientations(rows, files)
 
     render_id = args.render_id or f'{args.detections.stem}-pad{args.pad}-t{args.threshold}'
     folder = args.out / render_id
     if folder.exists():
         sys.exit(f'{folder} exists; choose another --render-id')
-    folder.mkdir(parents=True)
+    part = folder.with_name(folder.name + '.part')  # renamed to folder once every copy is written
+    if part.exists():
+        for leftover in part.iterdir():
+            leftover.unlink()
+    part.mkdir(parents=True, exist_ok=True)
     images = {}
     with run_detect.EvalPage(page_url, stub) as page:
         for row in rows:
@@ -91,7 +97,7 @@ def main(argv=None):
             entry = {'width': width, 'height': height, 'masks': masks}
             for kind in ('masked', 'plain'):
                 data = base64.b64decode(result[kind])
-                (folder / f'{i}.{kind}.jpg').write_bytes(data)
+                (part / f'{i}.{kind}.jpg').write_bytes(data)
                 entry[f'{kind}Sha256'] = run_detect.sha256(data)
             images[i] = entry
     info = {'render': render_id, 'detections': str(args.detections),
@@ -101,7 +107,8 @@ def main(argv=None):
             'created': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
             'gitCommit': run_detect.git_commit(), 'python': platform.python_version(),
             'playwright': metadata.version('playwright')}
-    (folder / 'render_info.json').write_text(json.dumps(info, indent=1) + '\n', encoding='utf-8')
+    (part / 'render_info.json').write_text(json.dumps(info, indent=1) + '\n', encoding='utf-8')
+    part.rename(folder)
     print(f'{len(images)} images, {sum(len(e["masks"]) for e in images.values())} masks: {folder}')
 
 

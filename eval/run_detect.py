@@ -180,6 +180,16 @@ class EvalPage:
             self._check()
 
 
+def check_orientations(rows, files):
+    """Fail before the browser starts, not inside it, on an image stored turned that cannot be served upright."""
+    for r in rows:
+        if int(r['rotation']):
+            try:
+                with_orientation(files[r['imageId']].read_bytes(), int(r['rotation']))
+            except (ValueError, IndexError) as e:
+                sys.exit(f'{r["imageId"]}: cannot add an EXIF orientation tag: {e}')
+
+
 def require_review(rows, manifest, stub):
     """Part B runs no detector on an image before it is reviewed, so a real eval page gets only images that
     review.csv keeps. The stub runs no detector."""
@@ -253,12 +263,8 @@ def main(argv=None):
         sys.exit(f'{len(bad)} images are missing or differ from the manifest, for example {bad[0]}; '
                  f'run eval/download.py')
     require_review(rows, args.manifest, stub)
-    for r in rows:  # fail here, not inside the browser, on an image that cannot be served upright
-        if int(r['rotation']) and 'none' in transform_list:
-            try:
-                with_orientation(files[r['imageId']].read_bytes(), int(r['rotation']))
-            except (ValueError, IndexError) as e:
-                sys.exit(f'{r["imageId"]}: cannot add an EXIF orientation tag: {e}')
+    if 'none' in transform_list:
+        check_orientations(rows, files)
 
     setting = 'single' if tiling['kind'] == 'none' else f'tiles{tiling["longSide"]}-{tiling["overlap"]}'
     run_id = args.run_id or (f'{datetime.date.today().isoformat()}-{"stub" if stub else "app"}-{args.model}-'
