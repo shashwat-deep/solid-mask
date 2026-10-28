@@ -2,7 +2,7 @@ import { DETECTION, PAD } from './config.ts';
 import { decode } from './pipeline/decode.ts';
 import { detectFaces, loadDetector } from './pipeline/detect.ts';
 import { encodeJpeg } from './pipeline/encode.ts';
-import { drawMasks, maskFor, type Rect } from './pipeline/mask.ts';
+import { maskFor, paint, type Rect } from './pipeline/mask.ts';
 
 function element<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id);
@@ -30,17 +30,9 @@ function say(message: string): void {
   status.textContent = message;
 }
 
-/**
- * Draws the photo at full size with its blocks painted over it, in one go, so the uncovered photo
- * is never on screen. CSS scales the canvas to the screen.
- */
+/** Shows the photo with its blocks painted in; CSS scales the canvas to the screen. */
 function show(image: ImageBitmap, masks: Rect[]): void {
-  canvas.width = image.width;
-  canvas.height = image.height;
-  const context = canvas.getContext('2d');
-  if (!context) throw new Error('no 2D canvas');
-  context.drawImage(image, 0, 0);
-  drawMasks(context, masks);
+  paint(canvas, image, masks);
   canvas.hidden = false;
 }
 

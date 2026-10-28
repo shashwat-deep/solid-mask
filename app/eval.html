@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <!-- Development only (docs/contracts.md, section 3): `npm run dev` serves this page and the deployed
+         build leaves it out. Same policy as index.html, so the evaluation runs under the app's own rules. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' blob: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+    <meta name="referrer" content="no-referrer">
+    <title>solid-mask eval page</title>
+    <link rel="icon" href="data:,">
+    <script type="module" src="./src/eval.ts"></script>
+  </head>
+  <body>
+    <p>The eval page for eval/run_detect.py (docs/contracts.md, section 3). It shows nothing; it gives window.solidMask.</p>
+  </body>
+</html>

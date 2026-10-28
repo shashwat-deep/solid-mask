@@ -20,6 +20,17 @@ Every privacy test first checks that the face in the saved copy is covered, so n
 
 `instruments.spec.ts` checks the checks: each one has to catch the problem it looks for.
 
+## Eval page
+
+`app/eval-page.spec.ts` drives the eval page (`app/eval.html`, `docs/contracts.md`, section 3) on the app's development server, as `eval/run_detect.py` does: the test photo is served on the page's own origin and detected with the runner's options. It checks that:
+
+- the face matches what OpenCV's FaceDetectorYN finds with the same model (within 0.5 px and 0.0005 of score), with the same 15 boxes scoring 0.05 or more;
+- `render()` covers the face and writes a file with nothing but the picture;
+- `info()` gives the ONNX Runtime version, `wasm`, one thread and the model's SHA-256;
+- the deployed build holds neither the page nor its code.
+
+Playwright starts the development server on port 4402 for these tests.
+
 ## Test photos
 
 Test photos are downloaded, never committed (`CLAUDE.md`, rule 3). `fixtures/photos.csv` lists each photo with its source, licence, author and SHA-256, and `fixtures/fetch.ts` downloads it into `fixtures/data/` and refuses it if the hash differs. `fixtures/faces.csv` gives the core of each face, eyebrows to below the mouth and cheek to cheek, in pixels of the upright photo. The face checks use these boxes, so they don't depend on the padding the evaluation chooses.
