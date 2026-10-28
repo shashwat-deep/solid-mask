@@ -23,6 +23,10 @@ of the images drawn with numpy's default_rng(0), the same resamples for every va
 97.5th percentiles. Resamples that hold no face of a breakdown are left out of its interval and counted in
 resamplesWithNoFaces. Each transform and setting (inputSize and tiling) in the run is scored on its own.
 
+The miss rate is broken down by face size, occlusion, truncation and yaw (once labelled), and, when
+eval/manifest/luma.csv exists (face_luma.py), into the darkest tenth of the faces by mean luma, the ceil(n / 10)
+faces with the lowest, ties broken by image and face ID, and the rest.
+
 --operating-point applies the protocol's rule on the tune split, with no transform, for each setting: for each
 threshold from 0.05 to 0.99 in steps of 0.01, take the smallest pad from 0 to 1 in steps of 0.05 at which at least
 99% of the found faces are covered completely; the operating point is the lowest threshold at which, with its
@@ -34,6 +38,7 @@ import argparse, csv, json, math, sys
 from pathlib import Path
 import numpy as np
 import download
+import face_luma
 import transforms
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,7 +49,7 @@ THRESHOLDS = [k / 100 for k in range(5, 100)]    # 0.05 to 0.99 in steps of 0.01
 COMPLETE_SHARE, FALSE_PER_IMAGE = 0.99, 0.25     # the operating-point rule
 SIZE_BINS = [(0.02, '<2%'), (0.05, '2-5%'), (0.10, '5-10%'), (0.25, '10-25%'), (math.inf, '>=25%')]
 FACE_FIELDS = ['imageId', 'faceId', 'split', 'transform', 'inputSize', 'tiling', 'isDepiction', 'isOccluded',
-               'isTruncated', 'yaw', 'size', 'coverage', 'protected', 'complete', 'found']
+               'isTruncated', 'yaw', 'size', 'luma', 'darkestTenth', 'coverage', 'protected', 'complete', 'found']
 
 
 # Geometry. A polygon is a list of (x, y) vertices of a convex shape; a rectangle is (x0, y0, x1, y1).
@@ -154,6 +159,7 @@ def size_bin(face, width, height):
 
 
 def load_manifest(folder):
+    """(images by ID, faces by image ID). Each face has its size bin, and its mean luma when luma.csv exists."""
     with open(folder / 'images.csv', newline='', encoding='utf-8') as fh:
         images = {r['imageId']: r for r in csv.DictReader(fh)}
     faces = {i: [] for i in images}
@@ -163,6 +169,13 @@ def load_manifest(folder):
             face = {**r, **{k: float(r[k]) for k in 'xywh'}}
             face['size'] = size_bin(face, int(image['width']), int(image['height']))
             faces[r['imageId']].append(face)
+    luma = face_luma.read_luma(folder / 'luma.csv') if (folder / 'luma.csv').exists() else {}
+    keys = {(f['imageId'], f['faceId']) for image_faces in faces.values() for f in image_faces}
+    if luma and set(luma) != keys:
+        sys.exit(f'{folder / "luma.csv"} does not match faces.csv; run eval/face_luma.py')
+    for image_faces in faces.values():
+        for f in image_faces:
+            f['luma'] = luma.get((f['imageId'], f['faceId']))
     return images, faces
 
 
@@ -231,7 +244,7 @@ def score_group(images, pad, threshold):
             rows.append({'imageId': im.id, 'faceId': face['faceId'], 'split': im.split,
                          'isDepiction': face['isDepiction'], 'isOccluded': face['isOccluded'],
                          'isTruncated': face['isTruncated'], 'yaw': face['yaw'], 'size': face['size'],
-                         'coverage': coverage[k], 'protected': coverage[k] >= PROTECTED,
+                         'luma': face['luma'], 'coverage': coverage[k], 'protected': coverage[k] >= PROTECTED,
                          'complete': coverage[k] >= COMPLETE, 'found': k in found})
     index = {im.id: n for n, im in enumerate(images)}
     boot = Bootstrap(len(images))
@@ -260,6 +273,17 @@ def score_group(images, pad, threshold):
                   else sorted({r[field] for r in real} - {'', 'unclear'}))  # unclear yaw is left out
         summary['missRateBy'][field] = {v: boot.ratio(*per_image_counts([r for r in real if r[field] == v], missed))
                                         for v in values}
+    if real and all(r['luma'] is not None for r in real):
+        # Measured light: the ceil(n / 10) faces with the lowest mean luma, against the rest.
+        ordered = sorted(real, key=lambda r: (r['luma'], r['imageId'], int(r['faceId'])))
+        dark = ordered[:math.ceil(len(ordered) / 10)]
+        for r in ordered:
+            r['darkestTenth'] = False
+        for r in dark:
+            r['darkestTenth'] = True
+        summary['missRateBy']['luma'] = {'darkest tenth': boot.ratio(*per_image_counts(dark, missed)),
+                                         'rest': boot.ratio(*per_image_counts(ordered[len(dark):], missed))}
+        summary['lumaCutoff'] = dark[-1]['luma']
     return rows, summary
 
 
