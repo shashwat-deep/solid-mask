@@ -97,14 +97,23 @@ TO_LINEAR = srgb_to_linear(np.arange(256) / 255)
 STEPS = srgb_to_linear((np.arange(1, 256) - 0.5) / 255)
 
 
+def orientation_in(exif):
+    """The Orientation tag in EXIF data (an EXIF segment from "Exif\\0\\0" on), None when it has none, or
+    'unreadable' when Pillow cannot read the data."""
+    data = Image.Exif()
+    try:
+        data.load(exif)
+    except Exception:  # damaged data raises SyntaxError, ValueError or struct.error, depending on the damage
+        return 'unreadable'
+    return data.get(0x0112)
+
+
 def exif_orientation(path):
-    """The Orientation tag in an image file's EXIF data, which Chromium applies, or None when there is none.
-    (Pillow's getexif() would also report XMP's tiff:Orientation, which Chromium ignores.)"""
+    """The Orientation tag in an image file's EXIF data, which Chromium applies, None when there is none, or
+    'unreadable' (orientation_in()). Like Chromium, it reads only the first EXIF segment of a JPEG. (Pillow's
+    getexif() would also report XMP's tiff:Orientation, which Chromium ignores.)"""
     with Image.open(path) as image:
-        exif = Image.Exif()
-        if image.info.get('exif'):
-            exif.load(image.info['exif'])
-        return exif.get(0x0112)
+        return orientation_in(image.info['exif']) if image.info.get('exif') else None
 
 
 def upright(path, rotation):

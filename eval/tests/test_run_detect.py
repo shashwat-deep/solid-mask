@@ -23,9 +23,11 @@ def stored_jpeg(rotation):
 
 
 def tagged_jpeg(rotation, orientation):
-    """stored_jpeg() carrying an EXIF orientation tag of its own."""
+    """stored_jpeg() with EXIF data of its own: a camera make and, unless orientation is None, an orientation."""
     exif = Image.Exif()
-    exif[0x0112] = orientation
+    exif[0x010F] = 'Test camera'
+    if orientation is not None:
+        exif[0x0112] = orientation
     buffer = io.BytesIO()
     Image.open(io.BytesIO(stored_jpeg(rotation))).save(buffer, 'JPEG', quality=100, subsampling=0,
                                                        exif=exif.tobytes())
@@ -79,6 +81,17 @@ def test_with_orientation_adds_the_tag_pillow_reads():
     padded = stored_jpeg(90)
     padded = padded[:2] + b'\xff\xff' + padded[2:]  # fill bytes before the first segment are allowed
     assert Image.open(io.BytesIO(run_detect.with_orientation(padded, 90))).getexif()[0x0112] == 8
+
+
+def test_with_orientation_replaces_exif_data_without_an_orientation():
+    for orientation in (None, 1):
+        stored = tagged_jpeg(90, orientation)
+        image = Image.open(io.BytesIO(run_detect.with_orientation(stored, 90)))
+        assert [data[:6] for marker, data in image.applist if marker == 'APP1'] == [b'Exif\x00\x00']
+        assert dict(image.getexif()) == {0x0112: 8} and ImageOps.exif_transpose(image).size == UPRIGHT
+        assert image.tobytes() == Image.open(io.BytesIO(stored)).tobytes()
+    with pytest.raises(ValueError, match='already has EXIF orientation 6'):
+        run_detect.with_orientation(tagged_jpeg(90, 6), 90)
 
 
 def test_runner_turns_every_image_upright_and_reruns_identically(chromium, tmp_path):
@@ -155,16 +168,21 @@ def test_runner_checks_before_starting_the_browser(tmp_path, monkeypatch):
     args = make_test_set(tmp_path)
     with pytest.raises(SystemExit):  # a stub run never goes into results/
         run_detect.main(args[:-2] + ['--out', str(run_detect.ROOT / 'results/detections')])
-    for i, jpeg, refusal in (('r000', tagged_jpeg(0, 3), 'carries EXIF orientation 3'),
-                             ('r090', run_detect.with_orientation(stored_jpeg(90), 90), 'carries EXIF orientation 8'),
-                             ('r090', tagged_jpeg(90, 1), 'already has EXIF')):
-        folder = tmp_path / f'{i}-{refusal.split()[-1]}'
+    for i, jpeg, orientation in (('r000', tagged_jpeg(0, 3), 3),
+                                 ('r090', run_detect.with_orientation(stored_jpeg(90), 90), 8)):
+        folder = tmp_path / i
         args = make_test_set(folder)
         replace_image(folder, i, jpeg)
-        for transform in ('none', 'rot0'):  # a file's own tag counts whatever the transform
-            if refusal != 'already has EXIF' or transform == 'none':
-                with pytest.raises(SystemExit, match=refusal):
-                    run_detect.main(args + ['--transforms', transform])
+        for transform in ('none', 'rot0'):  # a file's own orientation counts whatever the transform
+            with pytest.raises(SystemExit, match=f'EXIF orientation is {orientation}, not 1'):
+                run_detect.main(args + ['--transforms', transform])
+
+    folder, buffer = tmp_path / 'png', io.BytesIO()
+    args = make_test_set(folder)
+    Image.open(io.BytesIO(stored_jpeg(90))).save(buffer, 'PNG')
+    replace_image(folder, 'r090', buffer.getvalue())  # stored turned, and no JPEG to put a tag in
+    with pytest.raises(SystemExit, match='not a JPEG file'):
+        run_detect.main(args)
     rows = bm.read_csv(folder / 'manifest/images.csv')  # served as upright PNGs, the images need no tag
     run_detect.check_orientations(rows, {r['imageId']: folder / 'images' / f'{r["imageId"]}.jpg' for r in rows},
                                   as_stored=False)

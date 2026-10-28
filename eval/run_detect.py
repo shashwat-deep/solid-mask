@@ -60,13 +60,14 @@ DETECT = """async ({url, options}) => {
 def with_orientation(jpeg, rotation):
     """The JPEG with an EXIF segment holding only the Orientation tag that turns it counterclockwise by rotation.
 
-    The segment goes after the start of the file and the JFIF segment, if there is one. A JPEG that already has
-    EXIF data is refused, since it could hold an orientation of its own."""
+    The segment goes after the start of the file and the JFIF segment, if there is one, in place of the file's own
+    EXIF segments. A file whose first EXIF segment, the one Chromium reads, holds an orientation other than 1 is
+    refused, as build_manifest.py leaves it out (transforms.exif_orientation())."""
     if rotation == 0:
         return jpeg
     if jpeg[:2] != b'\xff\xd8':
         raise ValueError('not a JPEG file')
-    at, insert_at = 2, 2
+    at, insert_at, exif = 2, 2, []
     while at + 1 < len(jpeg) and jpeg[at] == 0xFF:  # the segments before the image data
         marker = jpeg[at + 1]
         if marker == 0xFF:            # a fill byte before a marker
@@ -79,17 +80,24 @@ def with_orientation(jpeg, rotation):
             continue
         length = int.from_bytes(jpeg[at + 2:at + 4], 'big')
         if marker == 0xE1 and jpeg[at + 4:at + 10] == b'Exif\x00\x00':
-            raise ValueError('the JPEG already has EXIF data')
+            exif.append((at, at + 2 + length))
         if marker == 0xE0 and at == 2:
             insert_at = at + 2 + length
         at += 2 + length
+    if exif and (own := transforms.orientation_in(jpeg[exif[0][0] + 4:exif[0][1]])) not in (None, 1):
+        raise ValueError(f'the JPEG already has EXIF orientation {own}')
+    rest, start = [], insert_at  # every EXIF segment lies after insert_at
+    for begin, end in exif:
+        rest.append(jpeg[start:begin])
+        start = end
+    rest.append(jpeg[start:])
     tiff = (b'MM\x00\x2a\x00\x00\x00\x08'                    # big-endian TIFF header, first directory at byte 8
             b'\x00\x01'                                      # one entry:
             b'\x01\x12\x00\x03\x00\x00\x00\x01'              # tag 0x0112 Orientation, type SHORT, count 1,
             + EXIF_ORIENTATION[rotation].to_bytes(2, 'big') + b'\x00\x00'   # value, padding
             + b'\x00\x00\x00\x00')                           # no further directory
     payload = b'Exif\x00\x00' + tiff
-    return jpeg[:insert_at] + b'\xff\xe1' + (len(payload) + 2).to_bytes(2, 'big') + payload + jpeg[insert_at:]
+    return jpeg[:insert_at] + b'\xff\xe1' + (len(payload) + 2).to_bytes(2, 'big') + payload + b''.join(rest)
 
 
 def sha256(data):
@@ -182,14 +190,13 @@ class EvalPage:
 
 def check_orientations(rows, files, as_stored=True):
     """Fail before the browser starts, not inside it, on an image that cannot be served upright: one whose file
-    carries an EXIF orientation other than 1, which the page would apply (build_manifest.py leaves such images
-    out), or, when the files are served as stored (transform none), one stored turned that cannot take an
-    orientation tag."""
+    carries an EXIF orientation other than 1, or EXIF data that cannot be read (Open Images' boxes may not allow
+    for the orientation, so build_manifest.py leaves such images out and transforms.upright() refuses them), or,
+    when the files are served as stored (transform none), one stored turned that cannot take an orientation tag."""
     for r in rows:
         own = transforms.exif_orientation(files[r['imageId']])
         if own not in (None, 1):
-            sys.exit(f'{r["imageId"]}: its file carries EXIF orientation {own}, which the page would apply; '
-                     f'build_manifest.py leaves such images out')
+            sys.exit(f'{r["imageId"]}: its EXIF orientation is {own}, not 1; build_manifest.py leaves such images out')
         if as_stored and int(r['rotation']):
             try:
                 with_orientation(files[r['imageId']].read_bytes(), int(r['rotation']))

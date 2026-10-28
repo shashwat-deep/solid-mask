@@ -128,10 +128,12 @@ def make_open_images(base, folder, n=40, oriented=()):
         bbox.append(f'{i},xclick,/m/01g317,1,0,1,0,1,0,0,0,0,0')  # a "Person" box, which is not a face
         info.append(f'{i},validation,https://example.org/{i}_o.jpg,https://example.org/{i},{licence},'
                     f'https://example.org/people/{n_},"Author, {n_}","A ""title"", {n_}",1,x,,{rotation}')
-        buffer, exif = io.BytesIO(), Image.Exif()
+        buffer, options = io.BytesIO(), {}
         if i in oriented:
+            exif = Image.Exif()
             exif[0x0112] = 6
-        white_patch((80, 60), BOX).convert('RGB').save(buffer, 'JPEG', quality=100, exif=exif.tobytes())
+            options['exif'] = exif.tobytes()
+        white_patch((80, 60), BOX).convert('RGB').save(buffer, 'JPEG', quality=100, **options)
         (folder / 'validation' / f'{i}.jpg').write_bytes(buffer.getvalue())
     files = {'validation-annotations-bbox.csv': bbox, 'test-annotations-bbox.csv': bbox[:1],
              'validation-images-with-rotation.csv': info, 'test-images-with-rotation.csv': info[:1],
@@ -153,7 +155,7 @@ def test_build_manifest_end_to_end(site, tmp_path, monkeypatch, capsys):
     paths = ['--meta', str(tmp_path / 'meta'), '--images', str(tmp_path / 'images'),
              '--manifest', str(tmp_path / 'manifest')]
     bm.main(['--tune', '2', '--report', '4'] + paths)
-    assert '1 left out for an EXIF orientation other than 1' in capsys.readouterr().out
+    assert '0 with EXIF data, 0 with an ICC profile; 1 left out for an EXIF orientation' in capsys.readouterr().out
     images = bm.read_csv(tmp_path / 'manifest/images.csv')
     assert {r['imageId'] for r in images} == {i for i, _ in bm.select(
         [i for i in eligible if i != oriented], {}, 2, 4)}  # replaced by the next report image
