@@ -11,7 +11,7 @@ export const BLOCK_COLOUR = '#000000';
  * and right and by pad × h at the top and bottom, clipped to the image, then widened to whole
  * pixels so that no pixel at its edge is only partly covered.
  */
-export function maskFor(box: Box, pad: number, width: number, height: number): Rect {
+export function maskFor(box: Pick<Box, 'x' | 'y' | 'w' | 'h'>, pad: number, width: number, height: number): Rect {
   const left = Math.max(0, Math.floor(box.x - pad * box.w));
   const top = Math.max(0, Math.floor(box.y - pad * box.h));
   const right = Math.min(width, Math.ceil(box.x + box.w + pad * box.w));
@@ -31,4 +31,18 @@ export function drawMasks(context: CanvasRenderingContext2D, masks: Rect[]): voi
   context.fillStyle = BLOCK_COLOUR;
   for (const m of masks) context.fillRect(m.x, m.y, m.w, m.h);
   context.restore();
+}
+
+/**
+ * Draws the photo at full size into the canvas and paints its blocks over it, in one synchronous step,
+ * so the uncovered photo is never on screen. These are the pixels the saved copy is encoded from; the
+ * page and the eval page's render() both use this, so the evaluation sees exactly what the app saves.
+ */
+export function paint(canvas: HTMLCanvasElement, image: ImageBitmap, masks: Rect[]): void {
+  canvas.width = image.width;
+  canvas.height = image.height;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('no 2D canvas');
+  context.drawImage(image, 0, 0);
+  drawMasks(context, masks);
 }

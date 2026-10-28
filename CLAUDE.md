@@ -51,7 +51,7 @@ npm run build       # type-checks, then writes the site to app/dist
 npm run preview     # serves app/dist
 ```
 
-`dev` and `build` first run `npm run fetch-model`, which downloads the YuNet model into `app/models/` and checks its SHA-256 (models are never committed).
+`dev` and `build` first run `npm run fetch-model`, which downloads the YuNet model into `app/models/` and checks its SHA-256 (models are never committed). `npm run dev` also serves the eval page, http://localhost:5173/eval.html (`docs/contracts.md`, section 3), which `eval/run_detect.py --page` drives; it stops rather than move to another port, a page reloaded mid-run refuses to start, and the deployed build leaves it out.
 
 Unit tests and privacy suite (`tests/`, see `tests/README.md`):
 
