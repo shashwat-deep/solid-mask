@@ -3,17 +3,20 @@
     python eval/yaw_sheet.py --labeller shashwat [--out data/yaw]
 
 The sample is the first 600 faces, in the order of the SHA-256 of "solid-mask:yaw:0:<imageId>:<faceId>", among the
-faces of the report split that are not depictions. The page shows one face at a time: a square crop twice the
+faces of the report split that are not depictions. It is labelled once the test set is frozen, so the script refuses
+to run until review.csv keeps every image in images.csv. The page shows one face at a time: a square crop twice the
 longer side of its box, centred on it, from the upright image (transforms.upright()), with ticks at the corners of
-the box and no detector output. It asks for one label per face: frontal (both eyes visible, face mostly towards the
-camera), three-quarter (both eyes visible, face clearly turned), profile (one eye or none visible) or unclear.
-Keys 1 to 4 choose a label; Backspace goes back one face.
+the box and no detector output. It asks for one label per face, by how far the head is turned away from the camera:
+frontal (under about 30 degrees), three-quarter (about 30 to 60), profile (over about 60) or unclear. Sunglasses,
+hair or a hand over the eyes do not change the label. Keys 1 to 4 choose a label; Backspace goes back one face. A
+key held down, or pressed with Ctrl, Alt or Meta, does nothing.
 
-The box at the bottom of the page holds the whole of eval/labels/yaw-<labeller>.csv, the labels already in that file
-and the new ones; save it in place of the file, or use the download button. The page shows only faces the file does
-not label yet, so labelling can stop and go on later. Each author labels alone: the page never shows the other
-author's labels, and neither author opens the other's file until both are complete (yaw_agreement.py compares them).
-The page loads nothing from the network and stores nothing.
+The box at the bottom of the page holds the whole of data/yaw/yaw-<labeller>.csv, the labels already in that file and
+the new ones; save it in place of the file, or use the download button. The page shows only faces the file does not
+label yet, so labelling can stop and go on later. Each author labels alone: the page never shows the other author's
+labels, and both files stay in data/yaw/, which git ignores, until both are complete; then they are committed
+together under results/yaw/, where yaw_agreement.py compares them. Each build first deletes the crops and the page
+of the last one. The page loads nothing from the network and stores nothing.
 """
 import argparse, html, json, re, sys
 from pathlib import Path
@@ -39,14 +42,17 @@ button {{ font: inherit; margin: 8px 8px 0 0; padding: 6px 12px }}
 textarea {{ width: 100%; height: 10em; font: 12px monospace }}
 </style>
 <h1>Yaw labels: {labeller}</h1>
-<p>Label the face between the yellow ticks. <b>Frontal</b>: both eyes visible, face mostly towards the camera.
-<b>Three-quarter</b>: both eyes visible, face clearly turned. <b>Profile</b>: one eye or none visible.
-<b>Unclear</b>: you can't tell. Keys 1 to 4 choose; Backspace goes back one face.</p>
+<p>Label the face between the yellow ticks by how far the head is turned away from the camera.
+<b>Frontal</b>: under about 30&deg;; the nose points at or near the camera, and both cheeks show about equally.
+<b>Three-quarter</b>: about 30&deg; to 60&deg;; the nose points clearly to one side, and the far cheek shows
+narrower. <b>Profile</b>: over about 60&deg;; the far side of the face is hidden, or nearly so.
+<b>Unclear</b>: you can't judge the turn. Judge the head, not the eyes: sunglasses, hair or a hand over the eyes
+don't change the label. Keys 1 to 4 choose; Backspace goes back one face.</p>
 <p>Label alone, and don't open the other author's file until you have both finished.</p>
 <p id="progress"></p>
 <img id="crop" alt="">
 <div>{buttons}</div>
-<h2>eval/labels/yaw-{labeller}.csv</h2>
+<h2>{labels_file}</h2>
 <p>Everything in this box, the labels already in the file and the new ones, replaces the file.</p>
 <textarea id="csv" readonly></textarea>
 <button id="download" type="button">Download the file</button>
@@ -78,10 +84,14 @@ function choose(label) {{
   show();
 }}
 document.addEventListener('keydown', (e) => {{
+  if (e.repeat || e.ctrlKey || e.altKey || e.metaKey) return;  // a key held down, or a shortcut, labels nothing
   if (e.key >= '1' && e.key <= '4') choose(names[Number(e.key) - 1]);
   if (e.key === 'Backspace' && at > 0) {{ at -= 1; labels.delete(key(faces[at])); unsaved = true; show(); e.preventDefault(); }}
 }});
-document.querySelectorAll('button[data-label]').forEach((b) => b.addEventListener('click', () => choose(b.dataset.label)));
+document.querySelectorAll('button[data-label]').forEach((b) => b.addEventListener('click', () => {{
+  b.blur();  // so that Space or Enter does not press it again for the next face
+  choose(b.dataset.label);
+}}));
 document.getElementById('download').addEventListener('click', () => {{
   const link = document.createElement('a');
   link.href = URL.createObjectURL(new Blob([csv.value], {{type: 'text/csv'}}));
@@ -90,7 +100,9 @@ document.getElementById('download').addEventListener('click', () => {{
   setTimeout(() => URL.revokeObjectURL(link.href), 10000);
   unsaved = false;
 }});
-csv.addEventListener('copy', () => {{ unsaved = false; }});
+csv.addEventListener('copy', () => {{  // only a copy of the whole box saves every label
+  if (csv.selectionStart === 0 && csv.selectionEnd === csv.value.length) unsaved = false;
+}});
 // The labels live only in this page until the box is saved: warn before closing it with labels not yet saved.
 window.addEventListener('beforeunload', (e) => {{ if (unsaved) e.preventDefault(); }});
 show();
@@ -146,7 +158,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--labeller', required=True, help='a short name in lower case, such as shashwat')
     ap.add_argument('--manifest', type=Path, default=ROOT / 'eval/manifest')
-    ap.add_argument('--labels', type=Path, default=ROOT / 'eval/labels')
+    ap.add_argument('--labels', type=Path, default=ROOT / 'data/yaw')
     ap.add_argument('--images', type=Path, default=ROOT / 'data/openimages/images')
     ap.add_argument('--out', type=Path, default=ROOT / 'data/yaw')
     args = ap.parse_args(argv)
@@ -154,11 +166,19 @@ def main(argv=None):
         ap.error('--labeller must be lower-case letters, digits and hyphens')
 
     images = {r['imageId']: r for r in build_manifest.read_csv(args.manifest / 'images.csv')}
+    review = build_manifest.read_review(args.manifest / 'review.csv')
+    unreviewed = [i for i in images if review.get(i) != 'keep']
+    if unreviewed:
+        sys.exit(f'{len(unreviewed)} of the {len(images)} images in {args.manifest / "images.csv"} have no "keep" in '
+                 f'review.csv; the yaw sample is labelled once the reviewed test set is frozen (protocol, part B)')
     chosen = sample(images, build_manifest.read_csv(args.manifest / 'faces.csv'))
-    existing = read_labels(args.labels / f'yaw-{args.labeller}.csv')
+    labels_file = args.labels / f'yaw-{args.labeller}.csv'
+    existing = read_labels(labels_file)
     todo = [f for f in chosen if (f['imageId'], f['faceId']) not in existing]
     out = args.out / args.labeller
     out.mkdir(parents=True, exist_ok=True)
+    for old in [*out.glob('*.jpg'), out / 'index.html']:  # no crop of an earlier build stays behind
+        old.unlink(missing_ok=True)
     for i in dict.fromkeys(f['imageId'] for f in todo):
         image = transforms.upright(download.image_path(args.images, i, images[i]['url']), int(images[i]['rotation']))
         for face in (f for f in todo if f['imageId'] == i):
@@ -168,8 +188,10 @@ def main(argv=None):
     buttons = ''.join(f'<button type="button" data-label="{label}">{n} {label}</button>'
                       for n, label in enumerate(LABELS, start=1))
     existing_pairs = [[f'{i},{n}', label] for (i, n), label in sorted(existing.items())]
+    shown = labels_file.relative_to(ROOT) if labels_file.is_relative_to(ROOT) else labels_file
     (out / 'index.html').write_text(PAGE.format(
-        labeller=html.escape(args.labeller), buttons=buttons, faces=json.dumps(page_faces),
+        labeller=html.escape(args.labeller), labels_file=html.escape(str(shown)), buttons=buttons,
+        faces=json.dumps(page_faces),
         existing=json.dumps(existing_pairs), names=json.dumps(LABELS)), encoding='utf-8')
     outside = len(set(existing) - {(f['imageId'], f['faceId']) for f in chosen})
     print(f'{len(chosen)} faces in the sample; {len(chosen) - len(todo)} labelled by {args.labeller}, {len(todo)} to go'
