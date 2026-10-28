@@ -16,7 +16,7 @@
 | It never changes your original. | `never-changes-original.spec.ts` | The chosen file is byte-for-byte unchanged after two saves, and the copies are named `masked-1.jpg` and `masked-2.jpg`. |
 | It never leaves the face in the saved file. | `never-leaves-the-face.spec.ts` | Inside each face, the saved pixels are the block colour (within ±2 in whole JPEG blocks). The file holds nothing but the picture: no EXIF, XMP, ICC, IPTC, C2PA or comment segment, no thumbnail, no bytes after the end marker, no text or compressed data from the original. |
 
-Every privacy test first checks that the face in the saved copy is covered, so none of them can pass on a page that does nothing.
+Every privacy test first checks that the face in the saved copy is covered, so none of them can pass on a page that does nothing. Each test keeps the copies it saved in its folder under `test-results/`, which Playwright empties before each run, so check E2 of the protocol (`eval/check_files.py`) can parse every file the suite saved.
 
 `instruments.spec.ts` checks the checks: each one has to catch the problem it looks for.
 
@@ -39,4 +39,4 @@ npm test
 
 ## Continuous integration
 
-`.github/workflows/pages.yml` runs `npm test` on every pull request and every push to `main`, on Ubuntu. On `main` it then deploys `app/dist` to GitHub Pages: exactly the build the suite has just tested, so a build that breaks a promise is never deployed.
+`.github/workflows/pages.yml` runs `npm test` on every pull request and every push to `main`, on Ubuntu, then runs `eval/check_files.py` (check E2) on all the copies the suite saved in the three browsers. It also runs the evaluation's own tests, `pytest eval/tests`, on Ubuntu and on Windows. On `main` it then deploys `app/dist` to GitHub Pages: exactly the build the suite has just tested, so a build that breaks a promise is never deployed.

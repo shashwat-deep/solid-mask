@@ -64,7 +64,7 @@ npm run test:unit   # unit tests only (Vitest, no browser)
 npm run typecheck
 ```
 
-CI (`.github/workflows/pages.yml`) runs `npm test` in `tests/` on every pull request and push to `main`; on `main` it then deploys the tested `app/dist` to GitHub Pages.
+CI (`.github/workflows/pages.yml`) runs on every pull request and push to `main`: `npm test` in `tests/`, then check E2 (`eval/check_files.py`) on every copy the privacy suite saved, and `pytest eval/tests` on Ubuntu and Windows. On `main` it then deploys the tested `app/dist` to GitHub Pages.
 
 Eval, from the top folder (`eval/README.md` explains each step):
 

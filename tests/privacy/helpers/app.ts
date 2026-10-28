@@ -1,7 +1,8 @@
 // Drives the app as a person does: wait until it is ready, choose a photo, wait for the blocks,
 // tap Save. Button names are the README's ("Choose photos", "Save").
 import { readFile } from 'node:fs/promises';
-import { expect, type Locator, type Page } from '@playwright/test';
+import { basename } from 'node:path';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { APP_URL } from '../../env.ts';
 
 // Loading the face detector, or masking a 12-megapixel photo, can take a while on a slow machine.
@@ -44,5 +45,9 @@ export async function maskAndSave(page: Page, photoPath: string): Promise<SavedC
   const download = page.waitForEvent('download');
   await saveButton(page).click();
   const saved = await download;
-  return { name: saved.suggestedFilename(), bytes: new Uint8Array(await readFile(await saved.path())) };
+  // Keep each copy in the test's output folder, so check E2 (eval/check_files.py, docs/eval-protocol.md,
+  // part E) can parse every file the suite saved. Playwright empties test-results/ before each run.
+  const kept = test.info().outputPath(basename(saved.suggestedFilename()));
+  await saved.saveAs(kept);
+  return { name: saved.suggestedFilename(), bytes: new Uint8Array(await readFile(kept)) };
 }
