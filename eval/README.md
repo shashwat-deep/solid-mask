@@ -20,6 +20,9 @@ The scripts here measure how often the tool leaves a face uncovered, following [
 - `labels/`: each author's yaw labels, and the faces they disagreed on.
 - `face_luma.py`: measures how bright each face is (mean luma inside its box).
 - `check_files.py`: check E2, the structure of saved files, segment by segment.
+- `render_copies.py`: check E3, part 1: saves each test image through the eval page as the app saves it, masked and unmasked.
+- `hash_distance.py`: check E3, part 2: how far each saved copy is from its original under PDQ and pHash.
+- `pdq.py`: PDQ, Meta's perceptual hash, written in numpy; `tests/pdq_reference.csv` lists the eight images and hashes of Meta's regression test that it reproduces.
 - `check_colour.py`: checks that the images the transforms start from have the pixels Chromium decodes.
 - `tests/`: tests for these scripts (pytest).
 
@@ -52,7 +55,7 @@ uv pip sync --python .venv/bin/python eval/requirements.txt
 
 The app's eval page does not exist yet. Until it does, the default `--page stub` uses `stub/`, which has the same interface but whose "detector" only finds solid magenta rectangles; the tests draw their made-up faces that way. A stub run measures nothing, so it goes to `data/stub-runs/`, never to `results/`.
 
-The runner gives each image to the page itself, on the page's own address, so nothing is sent anywhere, and it stops the run if the page asks for anything from another site. Open Images stores a few images turned; the runner adds an EXIF orientation tag to those, so the app's decoding turns them upright as it would a phone photo, and it checks every decoded size against the manifest. With `--transforms`, the runner also makes each rotated or darkened copy (`transforms.py`, protocol part B) just before the page asks for it, and keeps none of them. It starts from the image converted to sRGB by its ICC profile, as Chromium converts it; `check_colour.py` checks that the two agree within 1 for test images with each kind of profile, and is worth rerunning after updating Chromium or Pillow. Each run writes `results/detections/<run-id>.jsonl` (section 4 of the contract) and `<run-id>.run_info.json`, with the versions, hashes and timings. Two runs with the same versions must give the same `boxesSha256`, the SHA-256 of every line after the run line. `servedSha256` covers every image the runner gave the page, so when two runs differ it shows whether their images did.
+The runner gives each image to the page itself, on the page's own address, so nothing is sent anywhere, and it stops the run if the page asks for anything from another site. With the app's real eval page it runs only on images that `manifest/review.csv` keeps, since part B runs no detector on an image before it is reviewed. Open Images stores a few images turned; the runner adds an EXIF orientation tag to those, so the app's decoding turns them upright as it would a phone photo, and it checks every decoded size against the manifest. With `--transforms`, the runner also makes each rotated or darkened copy (`transforms.py`, protocol part B) just before the page asks for it, and keeps none of them. It starts from the image converted to sRGB by its ICC profile, as Chromium converts it; `check_colour.py` checks that the two agree within 1 for test images with each kind of profile, and is worth rerunning after updating Chromium or Pillow. Each run writes `results/detections/<run-id>.jsonl` (section 4 of the contract) and `<run-id>.run_info.json`, with the versions, hashes and timings. Two runs with the same versions must give the same `boxesSha256`, the SHA-256 of every line after the run line. `servedSha256` covers every image the runner gave the page, so when two runs differ it shows whether their images did.
 
 ## Scoring
 
@@ -83,6 +86,16 @@ Check E2 ([`docs/eval-protocol.md`](../docs/eval-protocol.md), part E) reads sav
 ```
 
 Give it every saved file of a run at once (files or folders), since the protocol allows an ICC profile only if every saved file has the same one. It fails a file for EXIF, XMP, IPTC or C2PA segments, a thumbnail, a differing ICC profile, or bytes after the end of the image. It lists any other segment for us to judge, and exits with an error if any file fails. The report holds segment names and sizes only, never pixels or metadata values.
+
+Check E3 compares each saved copy with its original under two perceptual hashes, the kind reverse image search uses. It needs a detections file of the report split and the operating point, and runs only on reviewed images:
+
+```bash
+.venv/bin/python eval/render_copies.py results/detections/<run-id>.jsonl --pad P --threshold T \
+    --page http://localhost:5173/eval.html
+.venv/bin/python eval/hash_distance.py data/rendered/<render-id>
+```
+
+The first saves every report image twice through the eval page's own `render()`: with its masks and, as the control, without. The copies stay in `data/`. The second reports the share of masked copies still within PDQ distance 31 of their original (Meta's matching threshold), with a confidence interval and broken down by how much of the picture is masked, and the full distributions of both distances. The report holds distances only, no hashes or pixels.
 
 ## How the test set is drawn
 

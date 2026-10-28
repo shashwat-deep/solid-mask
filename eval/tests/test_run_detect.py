@@ -39,6 +39,13 @@ def make_test_set(folder):
     return ['--manifest', str(folder / 'manifest'), '--images', str(folder / 'images'), '--out', str(folder / 'out')]
 
 
+def keep_all(folder):
+    """Record a "keep" for every image of the made-up test set, as the review would."""
+    bm.write_csv(folder / 'manifest/review.csv', bm.REVIEW_COLUMNS,
+                 [{'imageId': r['imageId'], 'decision': 'keep', 'reason': '', 'reviewer': 'test'}
+                  for r in bm.read_csv(folder / 'manifest/images.csv')])
+
+
 def test_with_orientation_adds_the_tag_pillow_reads():
     for rotation in (90, 180, 270):
         tagged = run_detect.with_orientation(stored_jpeg(rotation), rotation)
@@ -143,6 +150,9 @@ def test_runner_stops_when_the_page_asks_another_origin(chromium, site, tmp_path
     (folder / 'solid-mask-stub.js').write_bytes((run_detect.STUB / 'solid-mask-stub.js').read_bytes())
     (folder / 'index.html').write_text('<!doctype html><script type="module" src="solid-mask-stub.js"></script>'
                                        '<script>fetch("https://example.org/beacon").catch(() => {})</script>')
+    with pytest.raises(SystemExit, match='before it is reviewed'):  # a real page runs only on reviewed images
+        run_detect.main(args + ['--page', f'{base}/index.html'])
+    keep_all(tmp_path)
     with pytest.raises(SystemExit, match='another origin'):
         run_detect.main(args + ['--page', f'{base}/index.html'])
     assert '/index.html' in requested and not any(p.startswith(run_detect.IMAGE_PATH) for p in requested)
