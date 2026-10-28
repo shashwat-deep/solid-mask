@@ -97,13 +97,36 @@ TO_LINEAR = srgb_to_linear(np.arange(256) / 255)
 STEPS = srgb_to_linear((np.arange(1, 256) - 0.5) / 255)
 
 
+def orientation_in(exif):
+    """The Orientation tag in EXIF data (an EXIF segment from "Exif\\0\\0" on), None when it has none, or
+    'unreadable' when Pillow cannot read the data."""
+    data = Image.Exif()
+    try:
+        data.load(exif)
+    except Exception:  # damaged data raises SyntaxError, ValueError or struct.error, depending on the damage
+        return 'unreadable'
+    return data.get(0x0112)
+
+
+def exif_orientation(path):
+    """The Orientation tag in an image file's EXIF data, which Chromium applies, None when there is none, or
+    'unreadable' (orientation_in()). Like Chromium, it reads only the first EXIF segment of a JPEG. (Pillow's
+    getexif() would also report XMP's tiff:Orientation, which Chromium ignores.)"""
+    with Image.open(path) as image:
+        return orientation_in(image.info['exif']) if image.info.get('exif') else None
+
+
 def upright(path, rotation):
     """The stored image as Chromium shows it: converted to sRGB by its ICC profile (relative colorimetric
     intent), as RGB, and turned counterclockwise by Open Images' Rotation. Like Chromium, it applies an RGB profile
     to a greyscale image as if the image were RGB (14 greyscale test images carry one), and ignores a profile of
     another kind (one RGB test image carries a CMYK profile). On test images of each kind, the result is within 1
     of Chromium's decoded pixels. Images in other modes (CMYK, for example) have not been compared, so they are
-    refused."""
+    refused, and so is a file with an EXIF orientation other than 1, which Chromium would apply (build_manifest.py
+    leaves such images out)."""
+    orientation = exif_orientation(path)
+    if orientation not in (None, 1):
+        raise ValueError(f'{path}: its EXIF orientation is {orientation}, not 1')
     with Image.open(path) as image:
         if image.mode not in ('RGB', 'L'):
             raise ValueError(f'{path}: {image.mode} images are not supported; check them with check_colour.py first')

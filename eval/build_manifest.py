@@ -7,7 +7,9 @@ Follows docs/eval-protocol.md, part B, "Data", with the columns of docs/contract
 1. downloads Open Images' image lists and box annotations for its validation and test splits into
    data/openimages/meta/ and checks them against the SHA-256s in META;
 2. keeps the images with at least one "Human face" box, no face box marked IsGroupOf, the CC BY 2.0 licence and
-   a known orientation (Rotation 0, 90, 180 or 270);
+   a known orientation (Rotation 0, 90, 180 or 270), and, once downloaded, a file with no EXIF orientation other
+   than 1 and no EXIF data that cannot be read (the browser would turn the image by its EXIF orientation, and
+   Open Images' boxes and Rotation do not say whether they allow for it);
 3. puts an image in the tune split when the SHA-256 of "solid-mask:split:0:<imageId>", read as a number, is
    divisible by 5, and in the report split otherwise;
 4. ranks the images of each split by the SHA-256 of "solid-mask:order:0:<imageId>" and takes the first --tune
@@ -24,6 +26,7 @@ import argparse, csv, hashlib, sys
 from pathlib import Path
 from PIL import Image
 import download
+import transforms
 
 ROOT = Path(__file__).resolve().parents[1]
 META = {  # file name: (URL, SHA-256 of the copy downloaded on 27 October 2026)
@@ -160,28 +163,40 @@ def main(argv=None):
     info = image_info(args.meta, boxes)
     ids = eligible(boxes, info)
     review = read_review(args.manifest / 'review.csv')
-    chosen = select(ids, review, args.tune, args.report)
 
     old_images = args.manifest / 'images.csv'
-    old_sha = {r['imageId']: r['sha256'] for r in read_csv(old_images)} if old_images.exists() else {}
+    known = {r['imageId']: r['sha256'] for r in read_csv(old_images)} if old_images.exists() else {}
     old_faces = args.manifest / 'faces.csv'
     old_yaw = {(r['imageId'], r['faceId']): r['yaw'] for r in read_csv(old_faces)} if old_faces.exists() else {}
-    url = {i: CVDF.format(subset=info[i]['Subset'], image_id=i) for i, _ in chosen}
-    path = {i: download.image_path(args.images, i, url[i]) for i, _ in chosen}
-    sha, failed = download.fetch_all([(i, url[i], path[i], old_sha.get(i)) for i, _ in chosen], args.jobs)
-    if failed:
-        sys.exit('\n'.join(f'{i}: {error}' for i, error in sorted(failed.items())))
+    url = {i: CVDF.format(subset=info[i]['Subset'], image_id=i) for i in ids}
+    path = {i: download.image_path(args.images, i, url[i]) for i in ids}
+    oriented, checked = set(), set()  # oriented: an EXIF orientation other than 1, or EXIF data that cannot be read
+    while True:  # each image left out is replaced by the next one in its split's ranking, which is checked in turn
+        chosen = select([i for i in ids if i not in oriented], review, args.tune, args.report)
+        new = [i for i, _ in chosen if i not in checked]
+        sha, failed = download.fetch_all([(i, url[i], path[i], known.get(i)) for i in new], args.jobs)
+        if failed:
+            sys.exit('\n'.join(f'{i}: {error}' for i, error in sorted(failed.items())))
+        known.update(sha)
+        checked.update(new)
+        found = {i for i in new if transforms.exif_orientation(path[i]) not in (None, 1)}
+        if not found:
+            break
+        oriented |= found
 
-    image_rows, face_rows = [], []
+    image_rows, face_rows, large, with_exif, with_icc = [], [], 0, 0, 0
     for i, split in sorted(chosen):
         meta, rotation = info[i], ROTATIONS[info[i]['Rotation']]
         with Image.open(path[i]) as im:
             im.load()  # decodes the whole file, so a damaged image stops the script here
             width, height = im.size if rotation in (0, 180) else im.size[::-1]
+            large += max(im.size) > 1024
+            with_exif += bool(im.info.get('exif'))
+            with_icc += bool(im.info.get('icc_profile'))
         image_rows.append({
             'imageId': i, 'source': f'openimages-v7-{meta["Subset"]}', 'split': split, 'url': url[i],
             'landingUrl': meta['OriginalLandingURL'], 'licence': meta['License'], 'author': meta['Author'],
-            'authorUrl': meta['AuthorProfileURL'], 'title': meta['Title'], 'sha256': sha[i],
+            'authorUrl': meta['AuthorProfileURL'], 'title': meta['Title'], 'sha256': known[i],
             'width': width, 'height': height, 'rotation': rotation})
         for n, face in enumerate(boxes[i]):
             x0, x1, y0, y1 = upright(*(float(face[k]) for k in ('XMin', 'XMax', 'YMin', 'YMax')), rotation)
@@ -209,6 +224,8 @@ def main(argv=None):
     print(f'manifest: {args.tune} tune and {args.report} report images with {len(face_rows)} faces, '
           f'{sum(r["isDepiction"] == "1" for r in face_rows)} of them depictions; '
           f'{sum(r["rotation"] != 0 for r in image_rows)} images are stored turned and are rotated upright')
+    print(f'files: {large} larger than 1,024 px on the long side, {with_exif} with EXIF data, {with_icc} with an ICC '
+          f'profile; {len(oriented)} left out for an EXIF orientation other than 1 or EXIF data that cannot be read')
     print(f'review: {sum(d == "keep" for i, d in review.items() if i in in_set)} kept, '
           f'{sum(d == "remove" for d in review.values())} removed, '
           f'{sum(i not in review for i in in_set)} images in the manifest still to review')
