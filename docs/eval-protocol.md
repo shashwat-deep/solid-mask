@@ -13,11 +13,13 @@ Draft for M0. Owner: Shashwat Deep; reviewer: Pratyush. Both authors agreed on e
 
 ### Data
 
-- Source: Open Images V7, validation and test splits: images with at least one "Human face" box (label `/m/0dzct`). The annotations are under CC BY 4.0. Open Images lists the images as CC BY 2.0; each image's licence, author and title are copied from Open Images' image metadata into the manifest (`docs/contracts.md`, §6).
-- Exclusions: images with any face box marked IsGroupOf (the faces inside are not boxed one by one), and images removed in the review below.
-- Review: one author looks at every sampled image before any detector runs on it, and removes it if it is intimate or sexual, if there is any doubt about that, or if a visible face has no box. The other author checks a random 10% of the decisions. Removals are logged with a reason code and no description of the image.
-- Size: about 1,000 images and 2,000 faces after review, sampled at random with a fixed seed.
-- Split: 20% of the images form the tune split, used only to set the padding, the score threshold and the bake-off decision. The other 80% form the report split, which gives every number in the paper.
+- Source: Open Images V7, validation and test splits: images with at least one "Human face" box (label `/m/0dzct`). The annotations are under CC BY 4.0. Open Images lists the images as CC BY 2.0; each image's licence, author and title are copied from Open Images' image metadata into the manifest (`docs/contracts.md`, §6). The image files are the copies that the Common Visual Data Foundation (CVDF) hosts for Open Images: at most 1,024 px on the long side, with all metadata removed.
+- Exclusions: images with any face box marked IsGroupOf (the faces inside are not boxed one by one); images whose orientation Open Images does not give (an empty Rotation value, which Open Images uses for images that were no longer on Flickr in 2018 and, in its metadata, also for every image whose title contains a comma); and images removed in the review below.
+- Orientation: Open Images drew its boxes on the image as stored, and its Rotation column gives the counterclockwise turn (0°, 90°, 180° or 270°) that makes the image upright. The manifest gives every box in pixels of the upright image, and the detector is given the upright image.
+- Review: one author looks at every sampled image before any detector runs on it, and removes it if it is intimate or sexual (reason code `intimate`), if there is any doubt about that (`doubtful`), or if a visible face has no box (`unboxed-face`). The other author checks a random 10% of the decisions. Decisions are logged in `eval/manifest/review.csv` with the reason code and no description of the image.
+- Size: 1,000 images after review, 200 in the tune split and 800 in the report split. Before the review, the images drawn hold 1.8 faces each on average, so the set has about 1,800 faces.
+- Draw: an image is in the tune split when the SHA-256 of `solid-mask:split:0:<imageId>`, read as a number, is divisible by 5 (about 20% of the eligible images), and in the report split otherwise. Within each split, the images are ranked by the SHA-256 of `solid-mask:order:0:<imageId>`. The set is the first 200 tune and the first 800 report images in these rankings that the review keeps.
+- Split: the tune split is used only to set the padding, the score threshold and the bake-off decision. The report split gives every number in the paper.
 - Before scoring, check on at least 10 images that the boxes line up with the faces once the Rotation column is applied.
 - Frozen at M2: the manifest and the SHA-256 of every image are committed, and nothing is added or removed afterwards.
 
@@ -38,7 +40,7 @@ Draft for M0. Owner: Shashwat Deep; reviewer: Pratyush. Both authors agreed on e
 ### Settings compared
 
 - single: the whole image, resized so its long side is 640 px; one pass.
-- tiled: the image resized so its long side is 1,920 px (smaller images are not enlarged), cut into 640 px tiles that overlap by 25%, with boxes merged by NMS.
+- tiled: the image resized so its long side is 1,920 px (smaller images are not enlarged), cut into 640 px tiles that overlap by 25%, with boxes merged by NMS. The Open Images copies are at most 1,024 px, so in part B the tiled setting runs at each image's own size; the speed test (part D) uses photos of about 12 MP.
 
 ### Breakdowns
 

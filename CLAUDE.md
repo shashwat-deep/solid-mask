@@ -41,8 +41,6 @@ If you don't know whose session you are in, ask. Don't edit the other person's f
 
 ## Commands
 
-Add the eval commands here once they exist.
-
 App (`app/`):
 
 ```bash
@@ -67,3 +65,13 @@ npm run typecheck
 ```
 
 CI (`.github/workflows/pages.yml`) runs `npm test` in `tests/` on every pull request and push to `main`; on `main` it then deploys the tested `app/dist` to GitHub Pages.
+
+Eval, from the top folder (`eval/README.md` explains each step):
+
+```bash
+uv venv --python 3.13 .venv && uv pip sync --python .venv/bin/python eval/requirements.txt   # once
+.venv/bin/python -m pytest eval/tests          # tests
+.venv/bin/python eval/download.py              # test images into data/, checked against their SHA-256s
+.venv/bin/python eval/review_sheet.py          # page for reviewing the images not yet reviewed
+.venv/bin/python eval/build_manifest.py        # redraw the test set after a round of the review
+```
