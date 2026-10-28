@@ -14,7 +14,8 @@ so the page's content security policy (connect-src 'self') allows the fetch. Eve
 refused, and the run stops. An image that Open Images stores turned (Rotation 90, 180 or 270) is served with an
 EXIF orientation tag added, so the page's createImageBitmap(..., {imageOrientation: "from-image"}) turns it upright
 as it does a phone photo; the runner checks each decoded size against the upright size in the manifest. Before it
-starts, it checks every image file against its SHA-256 in the manifest.
+starts, it checks every image file against its SHA-256 in the manifest, and, unless the page is the stub, that
+review.csv keeps every image: part B runs no detector on an image before it is reviewed.
 
 --transforms lists the transforms to run, each over every image: none, rot<degrees> and dark<EV>
 (docs/eval-protocol.md, part B, "Breakdowns"). The runner makes each rotated or darkened image with
@@ -110,6 +111,97 @@ def prepare(row, path, transform, upright=None):
     return f'{row["imageId"]}.{transform}.png', 'image/png', transforms.png(image), expected
 
 
+class EvalPage:
+    """Headless Chromium on the eval page, with the runner's routing: each image is served on the page's own origin
+    under IMAGE_PATH, the stub's files come from eval/stub/, and a request to any other origin is refused and stops
+    the run. Use it as a context manager; run() serves one image and runs a script on it."""
+
+    def __init__(self, page_url, stub):
+        self.page_url, self.stub = page_url, stub
+        parts = urlsplit(page_url)
+        self.origin = f'{parts.scheme}://{parts.netloc}'
+        self.blocked, self.pending = [], {}
+
+    def _route(self, request_route):
+        url = request_route.request.url
+        here = urlsplit(url)
+        if f'{here.scheme}://{here.netloc}' != self.origin:
+            self.blocked.append(url)
+            return request_route.abort('blockedbyclient')
+        if here.path.startswith(IMAGE_PATH):
+            entry = self.pending.get(here.path[len(IMAGE_PATH):])
+            if entry is None:
+                return request_route.fulfill(status=404)
+            return request_route.fulfill(status=200, content_type=entry[0], body=entry[1])
+        if self.stub:
+            file = STUB / here.path.lstrip('/')
+            if file.parent != STUB or not file.is_file():
+                return request_route.fulfill(status=404)
+            return request_route.fulfill(path=file)
+        return request_route.continue_()
+
+    def _check(self):
+        if self.blocked:
+            sys.exit(f'the page asked for another origin, so the run stops: {self.blocked[0]}')
+
+    def __enter__(self):
+        from playwright.sync_api import sync_playwright
+        self._playwright = sync_playwright().start()
+        try:
+            self.browser = self._playwright.chromium.launch()
+            context = self.browser.new_context()
+            context.route('**/*', self._route)
+            self.page = context.new_page()
+            self.page.goto(self.page_url)
+            self.page.wait_for_function('() => window.solidMask !== undefined', timeout=120_000)
+            self.info = self.page.evaluate('() => window.solidMask.info()')
+            self.version = self.browser.version
+        except BaseException:
+            self._playwright.stop()
+            raise
+        return self
+
+    def run(self, script, name, content_type, body, **arg):
+        """Serve body as the one image the page may fetch, at name, and run script with {url, **arg}."""
+        self.pending.clear()
+        self.pending[name] = (content_type, body)
+        result = self.page.evaluate(script, {'url': f'{self.origin}{IMAGE_PATH}{name}', **arg})
+        self._check()
+        return result
+
+    def __exit__(self, kind, error, trace):
+        try:
+            if kind is None:
+                self.page.close(run_before_unload=True)  # so a request made while the page unloads is checked too
+        finally:
+            self.browser.close()
+            self._playwright.stop()
+        if kind is None:
+            self._check()
+
+
+def check_orientations(rows, files):
+    """Fail before the browser starts, not inside it, on an image stored turned that cannot be served upright."""
+    for r in rows:
+        if int(r['rotation']):
+            try:
+                with_orientation(files[r['imageId']].read_bytes(), int(r['rotation']))
+            except (ValueError, IndexError) as e:
+                sys.exit(f'{r["imageId"]}: cannot add an EXIF orientation tag: {e}')
+
+
+def require_review(rows, manifest, stub):
+    """Part B runs no detector on an image before it is reviewed, so a real eval page gets only images that
+    review.csv keeps. The stub runs no detector."""
+    if stub:
+        return
+    review = build_manifest.read_review(manifest / 'review.csv')
+    unreviewed = [r['imageId'] for r in rows if review.get(r['imageId']) != 'keep']
+    if unreviewed:
+        sys.exit(f'{len(unreviewed)} images have no "keep" in {manifest / "review.csv"}, for example {unreviewed[0]}; '
+                 f'part B of the protocol runs no detector on an image before it is reviewed')
+
+
 def git_commit():
     try:
         commit = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=ROOT, capture_output=True, text=True,
@@ -145,7 +237,6 @@ def main(argv=None):
     parts = urlsplit(page_url)
     if parts.scheme not in ('http', 'https') or not parts.netloc:
         ap.error('--page must be "stub" or an http(s) URL')
-    origin = f'{parts.scheme}://{parts.netloc}'
     if args.tiles:
         long_side, overlap = args.tiles.split(',')
         tiling = {'kind': 'tiles', 'longSide': int(long_side), 'overlap': float(overlap)}
@@ -171,12 +262,9 @@ def main(argv=None):
     if bad:
         sys.exit(f'{len(bad)} images are missing or differ from the manifest, for example {bad[0]}; '
                  f'run eval/download.py')
-    for r in rows:  # fail here, not inside the browser, on an image that cannot be served upright
-        if int(r['rotation']) and 'none' in transform_list:
-            try:
-                with_orientation(files[r['imageId']].read_bytes(), int(r['rotation']))
-            except (ValueError, IndexError) as e:
-                sys.exit(f'{r["imageId"]}: cannot add an EXIF orientation tag: {e}')
+    require_review(rows, args.manifest, stub)
+    if 'none' in transform_list:
+        check_orientations(rows, files)
 
     setting = 'single' if tiling['kind'] == 'none' else f'tiles{tiling["longSide"]}-{tiling["overlap"]}'
     run_id = args.run_id or (f'{datetime.date.today().isoformat()}-{"stub" if stub else "app"}-{args.model}-'
@@ -189,62 +277,23 @@ def main(argv=None):
     elif (args.out / f'{run_id}.jsonl').exists():
         sys.exit(f'{args.out / run_id}.jsonl exists; every run is kept, so choose another --run-id')
 
-    blocked = []
-    pending = {}  # the one image the page may fetch next: file name -> (content type, bytes)
-
-    def route(request_route):
-        url = request_route.request.url
-        here = urlsplit(url)
-        if f'{here.scheme}://{here.netloc}' != origin:
-            blocked.append(url)
-            return request_route.abort('blockedbyclient')
-        if here.path.startswith(IMAGE_PATH):
-            entry = pending.get(here.path[len(IMAGE_PATH):])
-            if entry is None:
-                return request_route.fulfill(status=404)
-            return request_route.fulfill(status=200, content_type=entry[0], body=entry[1])
-        if stub:
-            file = STUB / here.path.lstrip('/')
-            if file.parent != STUB or not file.is_file():
-                return request_route.fulfill(status=404)
-            return request_route.fulfill(path=file)
-        return request_route.continue_()
-
-    from playwright.sync_api import sync_playwright
     started, lines, times, served = datetime.datetime.now(datetime.timezone.utc), [], [], hashlib.sha256()
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch()
-        try:
-            context = browser.new_context()
-            context.route('**/*', route)
-            page = context.new_page()
-            page.goto(page_url)
-            page.wait_for_function('() => window.solidMask !== undefined', timeout=120_000)
-            info = page.evaluate('() => window.solidMask.info()')
-            for row in rows:
-                path = files[row['imageId']]
-                upright = None if transform_list == ['none'] else transforms.upright(path, int(row['rotation']))
-                for transform in transform_list:
-                    name, content_type, image, expected = prepare(row, path, transform, upright)
-                    served.update(f'{name} {sha256(image)}\n'.encode())
-                    pending.clear()
-                    pending[name] = (content_type, image)
-                    t0 = time.perf_counter()
-                    result = page.evaluate(DETECT, {'url': f'{origin}{IMAGE_PATH}{name}', 'options': options})
-                    times.append(1000 * (time.perf_counter() - t0))
-                    if blocked:
-                        sys.exit(f'the page asked for another origin, so the run stops: {blocked[0]}')
-                    if (result['width'], result['height']) != expected:
-                        sys.exit(f'{row["imageId"]} ({transform}) decoded at {result["width"]} x {result["height"]}, '
-                                 f'but it should be {expected[0]} x {expected[1]}')
-                    lines.append({'imageId': row['imageId'], 'transform': transform, 'inputSize': args.input_size,
-                                  'tiling': tiling, 'boxes': result['boxes']})
-            page.close(run_before_unload=True)  # so a request made while the page unloads is checked too
-            browser_version = browser.version
-        finally:
-            browser.close()
-    if blocked:
-        sys.exit(f'the page asked for another origin, so the run stops: {blocked[0]}')
+    with EvalPage(page_url, stub) as eval_page:
+        for row in rows:
+            path = files[row['imageId']]
+            upright = None if transform_list == ['none'] else transforms.upright(path, int(row['rotation']))
+            for transform in transform_list:
+                name, content_type, image, expected = prepare(row, path, transform, upright)
+                served.update(f'{name} {sha256(image)}\n'.encode())
+                t0 = time.perf_counter()
+                result = eval_page.run(DETECT, name, content_type, image, options=options)
+                times.append(1000 * (time.perf_counter() - t0))
+                if (result['width'], result['height']) != expected:
+                    sys.exit(f'{row["imageId"]} ({transform}) decoded at {result["width"]} x {result["height"]}, '
+                             f'but it should be {expected[0]} x {expected[1]}')
+                lines.append({'imageId': row['imageId'], 'transform': transform, 'inputSize': args.input_size,
+                              'tiling': tiling, 'boxes': result['boxes']})
+    info, browser_version = eval_page.info, eval_page.version
 
     model_sha = sha256((STUB / 'solid-mask-stub.js').read_bytes()) if stub else info['modelSha256']
     manifest_sha = download.sha256_file(args.manifest / 'images.csv')
