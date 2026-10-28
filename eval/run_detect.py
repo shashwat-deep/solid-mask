@@ -209,8 +209,7 @@ def require_review(rows, manifest, stub):
     review.csv keeps. The stub runs no detector."""
     if stub:
         return
-    review = build_manifest.read_review(manifest / 'review.csv')
-    unreviewed = [r['imageId'] for r in rows if review.get(r['imageId']) != 'keep']
+    unreviewed = build_manifest.not_kept(manifest, [r['imageId'] for r in rows])
     if unreviewed:
         sys.exit(f'{len(unreviewed)} images have no "keep" in {manifest / "review.csv"}, for example {unreviewed[0]}; '
                  f'part B of the protocol runs no detector on an image before it is reviewed')

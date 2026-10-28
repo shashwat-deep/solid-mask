@@ -118,6 +118,12 @@ def read_review(path):
     return review
 
 
+def not_kept(manifest, ids):
+    """The image IDs among ids that review.csv, in the manifest folder, does not keep."""
+    review = read_review(manifest / 'review.csv')
+    return [i for i in ids if review.get(i) != 'keep']
+
+
 def select(ids, review, n_tune, n_report):
     """[(imageId, split)]: the first n_tune tune and n_report report images in rank order not removed by review."""
     chosen = []

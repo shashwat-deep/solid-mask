@@ -72,10 +72,11 @@ The first finds the padding and threshold on the tune split by the protocol's ru
 
 Each of us labels the same 600 faces alone, once the test set is frozen ([`docs/eval-protocol.md`](../docs/eval-protocol.md), part B, "Breakdowns"):
 
-1. `.venv/bin/python eval/yaw_sheet.py --labeller <your name>` writes `data/yaw/<your name>/index.html`. Open it, label each face with the keys 1 to 4, and save the box at the bottom as `labels/yaw-<your name>.csv`. You can stop and go on later: the page shows only the faces the file doesn't label yet. Don't open the other author's file until you have both finished.
-2. `.venv/bin/python eval/yaw_agreement.py --out results/yaw-agreement.json` reports Cohen's κ with its confidence interval and writes the faces you disagree on to `labels/yaw-disagreements.csv`.
-3. Settle each of those together and write the agreed label in its `settled` column.
-4. `.venv/bin/python eval/yaw_agreement.py --write` puts the final labels into the `yaw` column of `manifest/faces.csv`, which `score.py` breaks the miss rate down by.
+1. `.venv/bin/python eval/yaw_sheet.py --labeller <your name>` writes `data/yaw/<your name>/index.html`; it runs only once the review keeps every image in the manifest. Open the page and label each face by how far the head is turned away from the camera, with the keys 1 to 4: frontal (under about 30°), three-quarter (about 30° to 60°), profile (over about 60°) or unclear. Judge the head, not the eyes: sunglasses or hair over the eyes don't change the label. Save the box at the bottom as `data/yaw/yaw-<your name>.csv`. You can stop and go on later: the page shows only the faces the file doesn't label yet. Don't open the other author's file until you have both finished.
+2. When you have both finished, copy both files into `results/yaw/` and commit them together, so neither of you sees the other's labels in a pull request while still labelling.
+3. `.venv/bin/python eval/yaw_agreement.py` writes the faces you disagree on to `results/yaw/yaw-disagreements.csv`, and Cohen's κ with its confidence interval to `results/yaw/agreement.json`, with the SHA-256 of both label files, the manifest and the disagreements file.
+4. Settle each of those together and write the agreed label in its `settled` column.
+5. `.venv/bin/python eval/yaw_agreement.py --write` puts the final labels into the `yaw` column of `manifest/faces.csv`, which `score.py` breaks the miss rate down by.
 
 ## Privacy checks
 
