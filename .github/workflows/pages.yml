@@ -61,7 +61,7 @@ jobs:
       # browsers together. It runs once eval/check_files.py is on the branch being tested.
       - name: Check the structure of the saved copies (E2)
         if: hashFiles('eval/check_files.py') != ''
-        run: python3 eval/check_files.py tests/test-results --out tests/test-results/e2.json
+        run: python3 eval/check_files.py tests/test-results/*/saved --out tests/test-results/e2.json
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
