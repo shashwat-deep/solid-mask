@@ -19,6 +19,7 @@ The scripts here measure how often the tool leaves a face uncovered, following [
 - `yaw_agreement.py`: compares the two authors' yaw labels (Cohen's κ) and writes the settled labels into `manifest/faces.csv`.
 - `labels/`: each author's yaw labels, and the faces they disagreed on.
 - `face_luma.py`: measures how bright each face is (mean luma inside its box).
+- `check_files.py`: check E2, the structure of saved files, segment by segment.
 - `check_colour.py`: checks that the images the transforms start from have the pixels Chromium decodes.
 - `tests/`: tests for these scripts (pytest).
 
@@ -72,6 +73,16 @@ Each of us labels the same 600 faces alone, once the test set is frozen ([`docs/
 2. `.venv/bin/python eval/yaw_agreement.py --out results/yaw-agreement.json` reports Cohen's κ with its confidence interval and writes the faces you disagree on to `labels/yaw-disagreements.csv`.
 3. Settle each of those together and write the agreed label in its `settled` column.
 4. `.venv/bin/python eval/yaw_agreement.py --write` puts the final labels into the `yaw` column of `manifest/faces.csv`, which `score.py` breaks the miss rate down by.
+
+## Privacy checks
+
+Check E2 ([`docs/eval-protocol.md`](../docs/eval-protocol.md), part E) reads saved files segment by segment, with a parser of its own, so a bug in the app's stripping can't hide itself:
+
+```bash
+.venv/bin/python eval/check_files.py path/to/saved/files --out results/privacy/e2.json
+```
+
+Give it every saved file of a run at once (files or folders), since the protocol allows an ICC profile only if every saved file has the same one. It fails a file for EXIF, XMP, IPTC or C2PA segments, a thumbnail, a differing ICC profile, or bytes after the end of the image. It lists any other segment for us to judge, and exits with an error if any file fails. The report holds segment names and sizes only, never pixels or metadata values.
 
 ## How the test set is drawn
 
