@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { type Candidate, decodeOutputs, letterbox, nms } from '../../app/src/pipeline/yunet.ts';
+import {
+  type Candidate,
+  decodeOutputs,
+  letterbox,
+  nms,
+  resizeArea,
+  tile,
+  tileCandidates,
+  tileStarts,
+} from '../../app/src/pipeline/yunet.ts';
 
 /** RGBA pixels from a function of position. */
 function image(width: number, height: number, rgb: (x: number, y: number) => [number, number, number]): Uint8ClampedArray {
@@ -31,6 +40,95 @@ describe('letterbox', () => {
     const { tensor, scaleX } = letterbox(image(3, 1, (x) => [[0, 90, 180][x], 0, 0]), 3, 1, 2);
     expect(scaleX).toBeCloseTo(2 / 3);
     expect([tensor[8], tensor[9]]).toEqual([30, 150]); // (0 + 0.5 x 90) / 1.5 and (0.5 x 90 + 180) / 1.5
+  });
+});
+
+describe('resizeArea', () => {
+  it('copies every pixel into B, G and R planes when the size does not change', () => {
+    const planes = resizeArea(image(3, 2, (x, y) => [10 * x, 20 * y, 7]), 3, 2, 3, 2);
+    expect([...planes]).toEqual([7, 7, 7, 7, 7, 7, 0, 0, 0, 20, 20, 20, 0, 10, 20, 0, 10, 20]);
+  });
+});
+
+describe('tile', () => {
+  // B, G and R planes of a 5 x 3 image whose values say where they are: 10 x row + column, plus
+  // 100 in G and 200 in R.
+  const planes = Float32Array.from({ length: 45 }, (_, i) => 100 * Math.floor(i / 15) + 10 * Math.floor((i % 15) / 5) + (i % 5));
+
+  it('holds the pixels from (left, top) at its top-left and zeros past the image', () => {
+    const tensor = tile(planes, 5, 3, 2, 1, 4);
+    const plane = (c: number) => [...tensor.subarray(16 * c, 16 * (c + 1))];
+    expect(plane(0)).toEqual([12, 13, 14, 0, 22, 23, 24, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    expect(plane(2)).toEqual([212, 213, 214, 0, 222, 223, 224, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+  });
+});
+
+describe('tileStarts', () => {
+  it('starts a tile every stride and moves the last one back to end at the edge', () => {
+    // 640 px tiles overlapping by 25%: the protocol's tiled setting.
+    expect(tileStarts(1920, 640, 480)).toEqual([0, 480, 960, 1280]);
+    expect(tileStarts(1440, 640, 480)).toEqual([0, 480, 800]);
+    expect(tileStarts(1024, 640, 480)).toEqual([0, 384]);
+    expect(tileStarts(1120, 640, 480)).toEqual([0, 480]);
+    expect(tileStarts(641, 640, 480)).toEqual([0, 1]);
+    expect(tileStarts(640, 640, 480)).toEqual([0]);
+    expect(tileStarts(300, 640, 480)).toEqual([0]);
+  });
+
+  it('covers every pixel, stays inside the edge and keeps neighbours overlapping by at least size - stride', () => {
+    for (const stride of [160, 320, 480, 640]) {
+      for (let length = 1; length <= 2000; length++) {
+        const starts = tileStarts(length, 640, stride);
+        expect(starts[0]).toBe(0);
+        expect(starts.at(-1)).toBe(Math.max(0, length - 640));
+        for (let i = 1; i < starts.length; i++) {
+          expect(starts[i] - starts[i - 1]).toBeGreaterThan(0);
+          expect(starts[i] - starts[i - 1]).toBeLessThanOrEqual(stride);
+        }
+      }
+    }
+  });
+
+  it('refuses a stride under one pixel, which would never reach the edge', () => {
+    expect(() => tileStarts(1000, 640, 0)).toThrow();
+    expect(() => tileStarts(1000, 640, Number.NaN)).toThrow();
+  });
+});
+
+describe('tileCandidates', () => {
+  /** A detector that finds the bounding box of the B values of 255, scoring the share of a 100 x 100 square it sees. */
+  const findSquare = async (tensor: Float32Array): Promise<Candidate[]> => {
+    let [x0, y0, x1, y1] = [Infinity, Infinity, -1, -1];
+    for (let i = 0; i < 640 * 640; i++) {
+      if (tensor[i] !== 255) continue;
+      const [x, y] = [i % 640, Math.floor(i / 640)];
+      [x0, y0, x1, y1] = [Math.min(x0, x), Math.min(y0, y), Math.max(x1, x), Math.max(y1, y)];
+    }
+    if (x1 < 0) return [];
+    const [w, h] = [x1 - x0 + 1, y1 - y0 + 1];
+    return [{ x: x0, y: y0, w, h, score: (w * h) / 10000 }];
+  };
+
+  it("gives each tile's candidates in the image's pixels, and one NMS keeps a face two tiles both find once", async () => {
+    // A 1000 x 700 image with a 100 x 100 square at (600, 300). Tiles start at x 0 and 360 and at
+    // y 0 and 60: the tiles at x 0 cut the square at x 640, the tiles at x 360 hold all of it.
+    const planes = resizeArea(image(1000, 700, (x, y) => (x >= 600 && x < 700 && y >= 300 && y < 400 ? [255, 255, 255] : [0, 0, 0])), 1000, 700, 1000, 700);
+    const found = await tileCandidates(planes, 1000, 700, 640, 480, findSquare);
+    const square = { x: 600, y: 300, w: 100, h: 100, score: 1 };
+    const cut = { x: 600, y: 300, w: 40, h: 100, score: 0.4 };
+    expect(found).toEqual([cut, square, cut, square]);
+    expect(nms(found, 0.3)).toEqual([square]); // the cut boxes overlap the square by 0.4
+  });
+
+  it('runs one tile on an image no larger than a tile', async () => {
+    const tensors: Float32Array[] = [];
+    const planes = resizeArea(image(300, 200, () => [255, 255, 255]), 300, 200, 300, 200);
+    const found = await tileCandidates(planes, 300, 200, 640, 480, async (tensor) => {
+      tensors.push(tensor);
+      return findSquare(tensor);
+    });
+    expect(tensors).toHaveLength(1);
+    expect(found).toEqual([{ x: 0, y: 0, w: 300, h: 200, score: 6 }]);
   });
 });
 

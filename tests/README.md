@@ -25,13 +25,14 @@ Every privacy test first checks that the face in the saved copy is covered, so n
 `app/eval-page.spec.ts` drives the eval page (`app/eval.html`, `docs/contracts.md`, section 3) on the app's development server, as `eval/run_detect.py` does: the test photo is served on the page's own origin and detected with the runner's options. It checks that:
 
 - the boxes match the 7 that OpenCV's FaceDetectorYN finds with the same model scoring 0.10 or more;
+- in the tiled setting (`--tiles 1920,0.25`: the photo shrunk to 1440 x 1920 and cut into 12 tiles of 640 x 640 that overlap), the boxes match the 16 scoring 0.10 or more that FaceDetectorYN finds tile by tile, merged with one NMS;
 - a copy of the photo stored turned, with the EXIF orientation the runner adds, decodes upright with the face within 2 px;
 - `render()` covers the face and writes a file with nothing but the picture;
 - `info()` gives the ONNX Runtime version, `wasm`, one thread and the model's SHA-256;
 - a reloaded page refuses to start (Vite reloads it when a file changes, which would change the code in the middle of a run);
 - the deployed build holds neither the page nor its code.
 
-The OpenCV boxes come from `reference/opencv_yunet.py`, which writes `reference/opencv_yunet.txt` (OpenCV 4.13.0, pinned in `reference/requirements.txt`); the test reads that file. In Chromium, the browser the runner uses, every box scoring 0.10 or more must match within 0.5 px and 0.0005 of score; Firefox and WebKit get 2 px and 0.002, since another engine may decode the JPEG a little differently.
+The OpenCV boxes come from `reference/opencv_yunet.py` and `reference/opencv_yunet_tiles.py`, which write `reference/opencv_yunet.txt` and `reference/opencv_yunet_tiles.txt` (OpenCV 4.13.0, pinned in `reference/requirements.txt`); the tests read those files. `opencv_yunet_tiles.py` was written from a step-by-step description of the tiled setting, without the app's code, so the two implementations check each other. In Chromium, the browser the runner uses, every box scoring 0.10 or more must match within 0.5 px and 0.0005 of score; Firefox and WebKit get 2 px and 0.002, since another engine may decode the JPEG a little differently. Boxes are matched by position, not by rank, since two scores closer than that may trade places.
 
 Playwright starts the development server on port 4402 for these tests.
 
