@@ -11,24 +11,38 @@ import { facesCoveredProblems } from '../privacy/helpers/pixels.ts';
 import { poisonedPhoto } from '../privacy/helpers/poison.ts';
 
 type Box = { x: number; y: number; w: number; h: number; score: number };
+// docs/contracts.md, section 1, as the runner sends it.
+type DetectOptions = {
+  model: 'yunet' | 'yolo5face';
+  inputSize: number;
+  tiling: { kind: 'none' } | { kind: 'tiles'; longSide: number; overlap: number };
+  scoreThreshold: number;
+  nmsIoU: number;
+};
 type SolidMask = {
   decode(url: string): Promise<ImageBitmap>;
-  detectFaces(image: ImageBitmap, options: object): Promise<Box[]>;
+  detectFaces(image: ImageBitmap, options: DetectOptions): Promise<Box[]>;
   render(image: ImageBitmap, masks: Omit<Box, 'score'>[]): Promise<Blob>;
   info(): { ortVersion: string; backend: string; threads: number; modelSha256: string };
 };
 
-// OpenCV's own YuNet boxes on the test photo, highest score first, written by tests/reference/opencv_yunet.py.
-const OPENCV: Box[] = readFileSync(new URL('../reference/opencv_yunet.txt', import.meta.url), 'utf8')
-  .split('\n')
-  .filter((line) => line.trim() && !line.startsWith('#'))
-  .map((line) => {
-    const [x, y, w, h, score] = line.trim().split(/\s+/).map(Number);
-    return { x, y, w, h, score };
-  });
-// The boxes are compared down to 0.10, where there are 7 (the lowest scores 0.1037, the next 0.0827), so the set is
-// not on a knife-edge. Below that, OpenCV's boxes differ from the app's at the right edge, where the app's
-// 640 x 640 letterbox and OpenCV's 480 px wide input see different borders.
+/** OpenCV's own YuNet boxes on the test photo, highest score first, as a script in tests/reference/ wrote them. */
+function opencvBoxes(file: string): Box[] {
+  return readFileSync(new URL(`../reference/${file}`, import.meta.url), 'utf8')
+    .split('\n')
+    .filter((line) => line.trim() && !line.startsWith('#'))
+    .map((line) => {
+      const [x, y, w, h, score] = line.trim().split(/\s+/).map(Number);
+      return { x, y, w, h, score };
+    });
+}
+// The single setting, from opencv_yunet.py, and the tiled one, from opencv_yunet_tiles.py.
+const OPENCV = opencvBoxes('opencv_yunet.txt');
+const OPENCV_TILES = opencvBoxes('opencv_yunet_tiles.txt');
+// The boxes are compared down to 0.10: 7 in the single setting (the lowest scores 0.1037, the next 0.0827) and 16
+// in the tiled one (0.1060, then 0.0939), so neither set is on a knife-edge. Below that, OpenCV's single-setting
+// boxes differ from the app's at the right edge, where the app's 640 x 640 letterbox and OpenCV's 480 px wide input
+// see different borders; the tiles are 640 x 640 in both.
 const CLEAR_SCORE = 0.1;
 // The runner uses Chromium (docs/contracts.md, section 3), and there the boxes must match to 0.5 px. Another
 // engine may decode the JPEG a little differently (WebKit on macOS uses Apple's ImageIO), so it gets 2 px.
@@ -38,20 +52,42 @@ function expectNear(actual: Box, expected: Box, bound: { px: number; score: numb
   for (const k of ['x', 'y', 'w', 'h'] as const) expect(Math.abs(actual[k] - expected[k]), `${what} ${k}`).toBeLessThanOrEqual(bound.px);
   expect(Math.abs(actual.score - expected.score), `${what} score`).toBeLessThanOrEqual(bound.score);
 }
+
+/** The boxes scoring CLEAR_SCORE or more match the expected ones in number, and each lies within the bound of one. */
+function expectSameBoxes(found: Box[], expected: Box[], bound: { px: number; score: number }, what: string): void {
+  const clear = (boxes: Box[]) => boxes.filter((b) => b.score >= CLEAR_SCORE);
+  const unmatched = clear(found);
+  expect(unmatched, `${what}: boxes scoring ${CLEAR_SCORE} or more`).toHaveLength(clear(expected).length);
+  clear(expected).forEach((box, i) => {
+    // Matched by position, not by rank: two scores 0.0005 apart may trade places in another engine.
+    const distance = (b: Box) => Math.max(...(['x', 'y', 'w', 'h'] as const).map((k) => Math.abs(b[k] - box[k])));
+    const nearest = unmatched.reduce((best, b) => (distance(b) < distance(best) ? b : best));
+    unmatched.splice(unmatched.indexOf(nearest), 1);
+    expectNear(nearest, box, bound, `${what} box ${i + 1}`);
+  });
+}
 // The model's SHA-256 in the OpenCV Zoo, as fetch-model.ts checks it.
 const MODEL_SHA256 = '8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4';
-// The options eval/run_detect.py passes for YuNet in the single setting.
-const RUNNER_OPTIONS = { model: 'yunet', inputSize: 640, tiling: { kind: 'none' }, scoreThreshold: 0.05, nmsIoU: 0.3 };
+// The options eval/run_detect.py passes for YuNet in the single setting, and with --tiles 1920,0.25, the
+// protocol's tiled setting (docs/eval-protocol.md, part B).
+const RUNNER_OPTIONS: DetectOptions = { model: 'yunet', inputSize: 640, tiling: { kind: 'none' }, scoreThreshold: 0.05, nmsIoU: 0.3 };
+const TILED_OPTIONS: DetectOptions = { ...RUNNER_OPTIONS, tiling: { kind: 'tiles', longSide: 1920, overlap: 0.25 } };
 const ORT_VERSION: string = JSON.parse(
   readFileSync(new URL('../../app/node_modules/onnxruntime-web/package.json', import.meta.url), 'utf8'),
 ).version;
 
-/** Serves bytes on the page's own origin, as the runner does, decodes and detects them, and renders the first box. */
-async function runPage(page: Page, image: Uint8Array) {
+/** Opens the eval page with the image served on its own origin, as the runner serves it, and returns its URL. */
+async function openPage(page: Page, image: Uint8Array): Promise<string> {
   const url = `${EVAL_ORIGIN}/__eval__/images/photo.jpg`;
   await page.route(url, (route) => route.fulfill({ body: Buffer.from(image), contentType: 'image/jpeg' }));
   await page.goto(EVAL_PAGE);
   await page.waitForFunction(() => (window as unknown as { solidMask?: unknown }).solidMask !== undefined);
+  return url;
+}
+
+/** Serves bytes on the page's own origin, as the runner does, decodes and detects them, and renders the first box. */
+async function runPage(page: Page, image: Uint8Array, options: DetectOptions = RUNNER_OPTIONS) {
+  const url = await openPage(page, image);
   const result = await page.evaluate(
     async ({ url, options }) => {
       const api = (window as unknown as { solidMask: SolidMask }).solidMask;
@@ -66,7 +102,7 @@ async function runPage(page: Page, image: Uint8Array) {
         bitmap.close();
       }
     },
-    { url, options: RUNNER_OPTIONS },
+    { url, options },
   );
   return { ...result, copy: new Uint8Array(Buffer.from(result.copy, 'base64')) };
 }
@@ -100,13 +136,48 @@ test('the eval page finds the boxes OpenCV finds, renders as the app saves, and 
   expect(result.info, 'info()').toEqual({ ortVersion: ORT_VERSION, backend: 'wasm', threads: 1, modelSha256: MODEL_SHA256 });
   expect(result.size, 'decoded size').toEqual([photo.width, photo.height]);
 
-  const expected = OPENCV.filter((b) => b.score >= CLEAR_SCORE);
-  const found = result.boxes.filter((b) => b.score >= CLEAR_SCORE);
-  expect(found, `boxes scoring ${CLEAR_SCORE} or more`).toHaveLength(expected.length);
-  expected.forEach((box, i) => expectNear(found[i], box, tolerance(browserName), `box ${i + 1}`));
+  expectSameBoxes(result.boxes, OPENCV, tolerance(browserName), 'single');
 
   expect(facesCoveredProblems(result.copy, photo.faces), 'faces left uncovered by render()').toEqual([]);
   expect(hiddenDataProblems(result.copy), 'hidden data in the copy render() encodes').toEqual([]);
+});
+
+test('in the tiled setting, the eval page finds the boxes OpenCV finds tile by tile', async ({ page, browserName }) => {
+  // OpenCV ran FaceDetectorYN on each of the 12 tiles of the photo shrunk to 1440 x 1920 and merged the boxes with
+  // one NMS (tests/reference/opencv_yunet_tiles.py), so this checks the shrinking, the tile layout, the offsets
+  // into the photo's pixels and the merge.
+  const photo = await poisonedPhoto();
+  const result = await runPage(page, new Uint8Array(await readFile(photo.sourcePath)), TILED_OPTIONS);
+  expectSameBoxes(result.boxes, OPENCV_TILES, tolerance(browserName), 'tiled');
+});
+
+test('in the tiled setting, a photo no longer than longSide runs at its own size, never enlarged', async ({ page }) => {
+  // Most Open Images copies take this path: at most 1,024 px, below the protocol's 1,920. The golden photo, 4,000 px
+  // long, never does, so here it is drawn at a quarter of its size, 750 x 1000, and detected with longSide 1000
+  // (its own size) and 4000 (which would enlarge it four times): the boxes must be the very same.
+  const photo = await poisonedPhoto();
+  const url = await openPage(page, new Uint8Array(await readFile(photo.sourcePath)));
+  const [ownSize, larger] = await page.evaluate(
+    async ({ url, options }) => {
+      const api = (window as unknown as { solidMask: SolidMask }).solidMask;
+      const bitmap = await api.decode(url);
+      const canvas = document.createElement('canvas');
+      canvas.width = bitmap.width / 4;
+      canvas.height = bitmap.height / 4;
+      canvas.getContext('2d')?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      bitmap.close();
+      const small = await createImageBitmap(canvas);
+      try {
+        const tiled = (longSide: number) => api.detectFaces(small, { ...options, tiling: { kind: 'tiles', longSide, overlap: 0.25 } });
+        return [await tiled(1000), await tiled(4000)];
+      } finally {
+        small.close();
+      }
+    },
+    { url, options: RUNNER_OPTIONS },
+  );
+  expect(ownSize.filter((b) => b.score >= 0.5), 'faces found at 750 x 1000').not.toHaveLength(0);
+  expect(larger, 'boxes with longSide 4000').toEqual(ownSize);
 });
 
 test('the eval page turns a photo stored turned upright by its EXIF orientation, as the runner relies on', async ({ page }) => {

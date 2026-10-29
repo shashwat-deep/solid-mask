@@ -1,6 +1,6 @@
-// The parts of YuNet face detection that need no ONNX Runtime: building the input tensor,
-// turning the outputs into boxes, and non-maximum suppression. Kept apart so they can be
-// unit-tested in Node (tests/unit/).
+// The parts of YuNet face detection that need no ONNX Runtime: building the input tensor (one
+// for the whole image, or one per tile), turning the outputs into boxes, and non-maximum
+// suppression. Kept apart so they can be unit-tested in Node (tests/unit/).
 //
 // face_detection_yunet_2023mar.onnx takes "input", 1 x 3 x 640 x 640 float32 in BGR order with
 // values 0 to 255 and no normalisation, the layout OpenCV's FaceDetectorYN gives it. For each
@@ -15,7 +15,9 @@ export const STRIDES = [8, 16, 32] as const;
 
 /**
  * For each output index along one axis, the first input index it covers and the weight of each
- * input index it covers: area averaging, which is what OpenCV's INTER_AREA does when shrinking.
+ * input index it covers: area averaging, the method of OpenCV's INTER_AREA when shrinking. The
+ * results agree pixel for pixel except where an average falls exactly halfway between two whole
+ * numbers: resizeArea rounds those up, while OpenCV's float32 sums can land on either side.
  */
 function areaWeights(inSize: number, outSize: number): { first: Int32Array; weights: Float32Array[] } {
   const scale = inSize / outSize;
@@ -35,18 +37,22 @@ function areaWeights(inSize: number, outSize: number): { first: Int32Array; weig
 }
 
 /**
- * Resizes RGBA pixels so the long side is `size`, by area averaging, rounds to whole values as an
- * 8-bit image would, and writes them as BGR planes into the top-left of a `size` x `size` tensor
- * whose other values are 0 (letterboxing). The result does not depend on the browser.
+ * Resizes RGBA pixels to outW x outH by area averaging and rounds to whole values, halves up, as
+ * an 8-bit image would. Returns the B, G and R planes, outW x outH each. The result does not
+ * depend on the browser.
  */
-export function letterbox(
-  rgba: Uint8ClampedArray,
-  width: number,
-  height: number,
-  size: number,
-): { tensor: Float32Array; scaleX: number; scaleY: number } {
-  const outW = Math.max(1, Math.round((width * size) / Math.max(width, height)));
-  const outH = Math.max(1, Math.round((height * size) / Math.max(width, height)));
+export function resizeArea(rgba: Uint8ClampedArray, width: number, height: number, outW: number, outH: number): Uint8ClampedArray {
+  const plane = outW * outH;
+  const planes = new Uint8ClampedArray(3 * plane);
+  if (outW === width && outH === height) {
+    // Area averaging at the same size copies every pixel; this does the same, faster.
+    for (let i = 0; i < plane; i++) {
+      planes[i] = rgba[4 * i + 2];
+      planes[plane + i] = rgba[4 * i + 1];
+      planes[2 * plane + i] = rgba[4 * i];
+    }
+    return planes;
+  }
   const cols = areaWeights(width, outW);
   const rows = areaWeights(height, outH);
 
@@ -72,8 +78,6 @@ export function letterbox(
   }
 
   // Then every column to outH pixels, into the B, G and R planes.
-  const plane = size * size;
-  const tensor = new Float32Array(3 * plane);
   for (let y = 0; y < outH; y++) {
     const w = rows.weights[y];
     const top = rows.first[y];
@@ -87,13 +91,99 @@ export function letterbox(
         g += w[k] * narrow[n + 1];
         b += w[k] * narrow[n + 2];
       }
-      const o = y * size + x;
-      tensor[o] = Math.round(b);
-      tensor[plane + o] = Math.round(g);
-      tensor[2 * plane + o] = Math.round(r);
+      const o = y * outW + x;
+      planes[o] = Math.round(b);
+      planes[plane + o] = Math.round(g);
+      planes[2 * plane + o] = Math.round(r);
     }
   }
+  return planes;
+}
+
+/**
+ * A `size` x `size` input tensor holding the pixels of B, G and R planes (width x height each)
+ * from (left, top) at its top-left, and 0 wherever it reaches past them.
+ */
+export function tile(planes: Uint8ClampedArray, width: number, height: number, left: number, top: number, size: number): Float32Array {
+  const tensor = new Float32Array(3 * size * size);
+  const w = Math.min(size, width - left);
+  const h = Math.min(size, height - top);
+  for (let c = 0; c < 3; c++) {
+    for (let y = 0; y < h; y++) {
+      const from = c * width * height + (top + y) * width + left;
+      tensor.set(planes.subarray(from, from + w), c * size * size + y * size);
+    }
+  }
+  return tensor;
+}
+
+/**
+ * Resizes RGBA pixels so the long side is `size`, by area averaging, rounds to whole values as an
+ * 8-bit image would, and writes them as BGR planes into the top-left of a `size` x `size` tensor
+ * whose other values are 0 (letterboxing). The result does not depend on the browser.
+ */
+export function letterbox(
+  rgba: Uint8ClampedArray,
+  width: number,
+  height: number,
+  size: number,
+): { tensor: Float32Array; scaleX: number; scaleY: number } {
+  const outW = Math.max(1, Math.round((width * size) / Math.max(width, height)));
+  const outH = Math.max(1, Math.round((height * size) / Math.max(width, height)));
+  const tensor = tile(resizeArea(rgba, width, height, outW, outH), outW, outH, 0, 0, size);
   return { tensor, scaleX: outW / width, scaleY: outH / height };
+}
+
+/**
+ * The size the tiled setting shrinks an image to: its long side at most `longSide`, the other side
+ * in proportion. An image already no longer keeps its size: the tiled setting never enlarges.
+ */
+export function tiledSize(width: number, height: number, longSide: number): { width: number; height: number } {
+  const long = Math.max(width, height);
+  if (long <= longSide) return { width, height };
+  return {
+    width: Math.max(1, Math.round((width * longSide) / long)),
+    height: Math.max(1, Math.round((height * longSide) / long)),
+  };
+}
+
+/**
+ * Where the tiles start along a side of `length` pixels: every `stride` pixels while a tile still
+ * ends before the edge, then once more so that the last tile ends exactly at the edge. No tile
+ * reaches past the edge, and neighbours overlap by at least size - stride. A side no longer than
+ * a tile gets one tile.
+ */
+export function tileStarts(length: number, size: number, stride: number): number[] {
+  if (!(stride >= 1)) throw new Error(`a tile stride of ${stride} px would never reach the edge`);
+  if (length <= size) return [0];
+  const starts: number[] = [];
+  for (let start = 0; start + size < length; start += stride) starts.push(start);
+  starts.push(length - size);
+  return starts;
+}
+
+/**
+ * Cuts B, G and R planes (width x height each) into `size` x `size` tiles that start every
+ * `stride` pixels (tileStarts), row by row, runs `detect` on each, and returns every tile's
+ * candidates in the planes' pixels, ready for one NMS over all of them.
+ */
+export async function tileCandidates(
+  planes: Uint8ClampedArray,
+  width: number,
+  height: number,
+  size: number,
+  stride: number,
+  detect: (tensor: Float32Array) => Promise<Candidate[]>,
+): Promise<Candidate[]> {
+  const found: Candidate[] = [];
+  for (const top of tileStarts(height, size, stride)) {
+    for (const left of tileStarts(width, size, stride)) {
+      for (const c of await detect(tile(planes, width, height, left, top, size))) {
+        found.push({ ...c, x: c.x + left, y: c.y + top });
+      }
+    }
+  }
+  return found;
 }
 
 const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));

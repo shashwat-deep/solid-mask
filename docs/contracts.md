@@ -1,8 +1,8 @@
 # Contracts
 
-Version 0.2. The app and the evaluation both depend on what is written here. Change it only through a PR that both authors approve, and raise the version number.
+Version 0.3. The app and the evaluation both depend on what is written here. Change it only through a PR that both authors approve, and raise the version number.
 
-Changes: 0.1 was the draft merged at M0. 0.2 rounds each mask outward to whole pixels (section 2).
+Changes: 0.1 was the draft merged at M0. 0.2 rounds each mask outward to whole pixels (section 2). 0.3 says where the tiles of the tiled setting lie and how their boxes are merged (section 1).
 
 ## 1. Face detection
 
@@ -20,7 +20,8 @@ export type Box = {
 export type Tiling =
   | { kind: "none" }                                      // long side resized to inputSize, one pass
   | { kind: "tiles"; longSide: number; overlap: number }; // long side resized to longSide (never enlarged), cut into
-                                                          // inputSize tiles overlapping by `overlap` (0 to 1), merged with NMS
+                                                          // inputSize tiles overlapping by `overlap` (0 to under 1),
+                                                          // merged with NMS
 
 export type DetectOptions = {
   model: "yunet" | "yolo5face";
@@ -36,6 +37,7 @@ export function detectFaces(image: ImageBitmap, options: DetectOptions): Promise
 
 - The app passes the upright bitmap from `createImageBitmap(file, { imageOrientation: "from-image" })`.
 - The score filter runs after NMS. Filtering the runner's boxes at a higher threshold therefore gives the same boxes as running with that threshold, so the evaluation can sweep thresholds without rerunning detection.
+- Tiles: along each side of the shrunk image, a tile starts every `round(inputSize × (1 − overlap))` px (480 for 640 and 0.25) for as long as it ends before the edge, and one more is moved back to end exactly at the edge. No tile reaches past the image, and neighbours overlap by at least `overlap`. A side no longer than `inputSize` gets one tile, padded with zeros. NMS runs once, over the boxes of all tiles in the shrunk image's pixels, so boxes that different tiles give for one face merge only when they overlap by more than `nmsIoU`; a face that no tile holds whole can come back as several boxes.
 - Every run records the ONNX Runtime Web version, the backend, the thread count and the model file's SHA-256.
 
 ## 2. Masks and the saved file
