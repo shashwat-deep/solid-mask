@@ -15,7 +15,9 @@ export const STRIDES = [8, 16, 32] as const;
 
 /**
  * For each output index along one axis, the first input index it covers and the weight of each
- * input index it covers: area averaging, which is what OpenCV's INTER_AREA does when shrinking.
+ * input index it covers: area averaging, the method of OpenCV's INTER_AREA when shrinking. The
+ * results agree pixel for pixel except where an average falls exactly halfway between two whole
+ * numbers: resizeArea rounds those up, while OpenCV's float32 sums can land on either side.
  */
 function areaWeights(inSize: number, outSize: number): { first: Int32Array; weights: Float32Array[] } {
   const scale = inSize / outSize;
@@ -35,13 +37,13 @@ function areaWeights(inSize: number, outSize: number): { first: Int32Array; weig
 }
 
 /**
- * Resizes RGBA pixels to outW x outH by area averaging and rounds to whole values as an 8-bit
- * image would. Returns the B, G and R planes, outW x outH each. The result does not depend on
- * the browser.
+ * Resizes RGBA pixels to outW x outH by area averaging and rounds to whole values, halves up, as
+ * an 8-bit image would. Returns the B, G and R planes, outW x outH each. The result does not
+ * depend on the browser.
  */
-export function resizeArea(rgba: Uint8ClampedArray, width: number, height: number, outW: number, outH: number): Float32Array {
+export function resizeArea(rgba: Uint8ClampedArray, width: number, height: number, outW: number, outH: number): Uint8ClampedArray {
   const plane = outW * outH;
-  const planes = new Float32Array(3 * plane);
+  const planes = new Uint8ClampedArray(3 * plane);
   if (outW === width && outH === height) {
     // Area averaging at the same size copies every pixel; this does the same, faster.
     for (let i = 0; i < plane; i++) {
@@ -102,7 +104,7 @@ export function resizeArea(rgba: Uint8ClampedArray, width: number, height: numbe
  * A `size` x `size` input tensor holding the pixels of B, G and R planes (width x height each)
  * from (left, top) at its top-left, and 0 wherever it reaches past them.
  */
-export function tile(planes: Float32Array, width: number, height: number, left: number, top: number, size: number): Float32Array {
+export function tile(planes: Uint8ClampedArray, width: number, height: number, left: number, top: number, size: number): Float32Array {
   const tensor = new Float32Array(3 * size * size);
   const w = Math.min(size, width - left);
   const h = Math.min(size, height - top);
@@ -133,6 +135,19 @@ export function letterbox(
 }
 
 /**
+ * The size the tiled setting shrinks an image to: its long side at most `longSide`, the other side
+ * in proportion. An image already no longer keeps its size: the tiled setting never enlarges.
+ */
+export function tiledSize(width: number, height: number, longSide: number): { width: number; height: number } {
+  const long = Math.max(width, height);
+  if (long <= longSide) return { width, height };
+  return {
+    width: Math.max(1, Math.round((width * longSide) / long)),
+    height: Math.max(1, Math.round((height * longSide) / long)),
+  };
+}
+
+/**
  * Where the tiles start along a side of `length` pixels: every `stride` pixels while a tile still
  * ends before the edge, then once more so that the last tile ends exactly at the edge. No tile
  * reaches past the edge, and neighbours overlap by at least size - stride. A side no longer than
@@ -153,7 +168,7 @@ export function tileStarts(length: number, size: number, stride: number): number
  * candidates in the planes' pixels, ready for one NMS over all of them.
  */
 export async function tileCandidates(
-  planes: Float32Array,
+  planes: Uint8ClampedArray,
   width: number,
   height: number,
   size: number,

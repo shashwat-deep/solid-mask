@@ -7,6 +7,7 @@ import {
   resizeArea,
   tile,
   tileCandidates,
+  tiledSize,
   tileStarts,
 } from '../../app/src/pipeline/yunet.ts';
 
@@ -41,6 +42,14 @@ describe('letterbox', () => {
     expect(scaleX).toBeCloseTo(2 / 3);
     expect([tensor[8], tensor[9]]).toEqual([30, 150]); // (0 + 0.5 x 90) / 1.5 and (0.5 x 90 + 180) / 1.5
   });
+
+  it('fills the height and leaves the columns right of the picture at zero when the photo is portrait', () => {
+    const { tensor, scaleX, scaleY } = letterbox(image(2, 4, () => [200, 100, 50]), 2, 4, 8);
+    const plane = 8 * 8;
+    expect([scaleX, scaleY]).toEqual([2, 2]);
+    expect([tensor[7 * 8 + 3], tensor[plane + 7 * 8 + 3], tensor[2 * plane + 7 * 8 + 3]]).toEqual([50, 100, 200]);
+    for (let y = 0; y < 8; y++) expect([...tensor.subarray(y * 8 + 4, y * 8 + 8)]).toEqual([0, 0, 0, 0]);
+  });
 });
 
 describe('resizeArea', () => {
@@ -48,12 +57,36 @@ describe('resizeArea', () => {
     const planes = resizeArea(image(3, 2, (x, y) => [10 * x, 20 * y, 7]), 3, 2, 3, 2);
     expect([...planes]).toEqual([7, 7, 7, 7, 7, 7, 0, 0, 0, 20, 20, 20, 0, 10, 20, 0, 10, 20]);
   });
+
+  it('rounds each average to the nearest whole value, halves up', () => {
+    // Three pixels to two: (0 + 0.5 x 100) / 1.5 = 33.3 and (0.5 x 100 + 200) / 1.5 = 166.7.
+    const thirds = resizeArea(image(3, 1, (x) => [[0, 100, 200][x], 0, 0]), 3, 1, 2, 1);
+    expect([...thirds.subarray(4, 6)]).toEqual([33, 167]);
+    // Two pixels to one: (0 + 1) / 2 = 0.5.
+    expect(resizeArea(image(2, 1, (x) => [x, 0, 0]), 2, 1, 1, 1)[2]).toBe(1);
+  });
+});
+
+describe('tiledSize', () => {
+  it('shrinks the long side to longSide, portrait or landscape, and the other side in proportion', () => {
+    expect(tiledSize(3000, 4000, 1920)).toEqual({ width: 1440, height: 1920 });
+    expect(tiledSize(4000, 3000, 1920)).toEqual({ width: 1920, height: 1440 });
+    // 1365 x 1920 / 2048 = 1279.7: the sides round separately, so their scales differ slightly.
+    expect(tiledSize(2048, 1365, 1920)).toEqual({ width: 1920, height: 1280 });
+    expect(tiledSize(20000, 5, 1920)).toEqual({ width: 1920, height: 1 });
+  });
+
+  it('never enlarges an image whose long side is longSide or less', () => {
+    expect(tiledSize(768, 1024, 1920)).toEqual({ width: 768, height: 1024 });
+    expect(tiledSize(1000, 500, 1920)).toEqual({ width: 1000, height: 500 });
+    expect(tiledSize(1920, 1080, 1920)).toEqual({ width: 1920, height: 1080 });
+  });
 });
 
 describe('tile', () => {
   // B, G and R planes of a 5 x 3 image whose values say where they are: 10 x row + column, plus
   // 100 in G and 200 in R.
-  const planes = Float32Array.from({ length: 45 }, (_, i) => 100 * Math.floor(i / 15) + 10 * Math.floor((i % 15) / 5) + (i % 5));
+  const planes = Uint8ClampedArray.from({ length: 45 }, (_, i) => 100 * Math.floor(i / 15) + 10 * Math.floor((i % 15) / 5) + (i % 5));
 
   it('holds the pixels from (left, top) at its top-left and zeros past the image', () => {
     const tensor = tile(planes, 5, 3, 2, 1, 4);
@@ -109,15 +142,24 @@ describe('tileCandidates', () => {
     return [{ x: x0, y: y0, w, h, score: (w * h) / 10000 }];
   };
 
-  it("gives each tile's candidates in the image's pixels, and one NMS keeps a face two tiles both find once", async () => {
-    // A 1000 x 700 image with a 100 x 100 square at (600, 300). Tiles start at x 0 and 360 and at
-    // y 0 and 60: the tiles at x 0 cut the square at x 640, the tiles at x 360 hold all of it.
-    const planes = resizeArea(image(1000, 700, (x, y) => (x >= 600 && x < 700 && y >= 300 && y < 400 ? [255, 255, 255] : [0, 0, 0])), 1000, 700, 1000, 700);
-    const found = await tileCandidates(planes, 1000, 700, 640, 480, findSquare);
+  /** The planes of a 1000 x 700 image, black but for a white 100 x 100 square with its top-left corner at (left, 300). */
+  const squareAt = (left: number) =>
+    resizeArea(image(1000, 700, (x, y) => (x >= left && x < left + 100 && y >= 300 && y < 400 ? [255, 255, 255] : [0, 0, 0])), 1000, 700, 1000, 700);
+
+  it("gives each tile's candidates in the image's pixels, and one NMS merges the boxes tiles give for one face when they overlap by more than the limit", async () => {
+    // Tiles start at x 0 and 360 and at y 0 and 60: the tiles at x 0 cut the square at x 640, the
+    // tiles at x 360 hold all of it.
+    const found = await tileCandidates(squareAt(600), 1000, 700, 640, 480, findSquare);
     const square = { x: 600, y: 300, w: 100, h: 100, score: 1 };
     const cut = { x: 600, y: 300, w: 40, h: 100, score: 0.4 };
     expect(found).toEqual([cut, square, cut, square]);
     expect(nms(found, 0.3)).toEqual([square]); // the cut boxes overlap the square by 0.4
+  });
+
+  it("keeps a tile's cut view of a face as a box of its own when it overlaps the whole face by the limit or less", async () => {
+    // Moved to x 610, the square shows only 30 of its 100 columns in the tiles at x 0: IoU 0.3.
+    const found = await tileCandidates(squareAt(610), 1000, 700, 640, 480, findSquare);
+    expect(nms(found, 0.3)).toEqual([{ x: 610, y: 300, w: 100, h: 100, score: 1 }, { x: 610, y: 300, w: 30, h: 100, score: 0.3 }]);
   });
 
   it('runs one tile on an image no larger than a tile', async () => {

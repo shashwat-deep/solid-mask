@@ -3,7 +3,7 @@ import * as ort from 'onnxruntime-web/wasm';
 import wasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url';
 import yunetUrl from '../../models/face_detection_yunet_2023mar.onnx?url';
 import { YUNET } from './models.ts';
-import { type Candidate, decodeOutputs, letterbox, nms, resizeArea, STRIDES, tileCandidates } from './yunet.ts';
+import { type Candidate, decodeOutputs, letterbox, nms, resizeArea, STRIDES, tileCandidates, tiledSize } from './yunet.ts';
 
 export type Box = {
   x: number;     // left edge in pixels of the bitmap passed in (origin top-left, x to the right)
@@ -16,7 +16,8 @@ export type Box = {
 export type Tiling =
   | { kind: 'none' }                                      // long side resized to inputSize, one pass
   | { kind: 'tiles'; longSide: number; overlap: number }; // long side resized to longSide (never enlarged), cut into
-                                                          // inputSize tiles overlapping by `overlap` (0 to 1), merged with NMS
+                                                          // inputSize tiles overlapping by `overlap` (0 to under 1),
+                                                          // merged with NMS
 
 export type DetectOptions = {
   model: 'yunet' | 'yolo5face';
@@ -114,32 +115,38 @@ async function detectTensor(session: ort.InferenceSession, tensor: Float32Array,
 export async function detectFaces(image: ImageBitmap, options: DetectOptions): Promise<Box[]> {
   if (options.model !== 'yunet') throw new Error(`the ${options.model} model is not supported yet`);
   if (options.inputSize !== YUNET.inputSize) throw new Error(`${YUNET.file} takes ${YUNET.inputSize} px input only`);
+  // The options come from the eval runner as untyped JSON, so check them before any work.
   const { tiling } = options;
+  const kind: string = tiling.kind;
+  if (kind !== 'none' && kind !== 'tiles') throw new Error(`unknown tiling kind ${kind}`);
+  const size = options.inputSize;
+  let stride = 0;
   if (tiling.kind === 'tiles') {
-    if (!(Number.isInteger(tiling.longSide) && tiling.longSide > 0)) throw new Error(`longSide ${tiling.longSide} is not a whole number of pixels`);
+    if (!(Number.isInteger(tiling.longSide) && tiling.longSide > 0)) throw new Error(`longSide ${tiling.longSide} is not a positive whole number of pixels`);
     if (!(tiling.overlap >= 0 && tiling.overlap < 1)) throw new Error(`overlap ${tiling.overlap} is not from 0 to under 1`);
+    stride = Math.round(size * (1 - tiling.overlap));
+    if (stride < 1) throw new Error(`overlap ${tiling.overlap} puts tiles under 1 px apart`);
   }
   const session = await loadDetector(options.modelSource);
 
-  const pixels = readPixels(image);
-  const size = options.inputSize;
+  // The photo's full-size pixels are read inside each branch and kept by neither, so they can be
+  // freed before the model runs.
   const minScore = Math.min(NMS_FLOOR, options.scoreThreshold);
   let candidates: Candidate[];
   let scaleX: number;
   let scaleY: number;
   if (tiling.kind === 'none') {
-    const boxed = letterbox(pixels, image.width, image.height, size);
+    const boxed = letterbox(readPixels(image), image.width, image.height, size);
     candidates = await detectTensor(session, boxed.tensor, size, minScore);
     ({ scaleX, scaleY } = boxed);
   } else {
     // The long side shrunk to longSide, never enlarged, then tiles of `size` that overlap by
-    // `overlap` (docs/eval-protocol.md, part B, "tiled"). NMS runs once, over every tile's
-    // candidates in the shrunk image's pixels, so a face that two tiles both find is kept once.
-    const long = Math.max(image.width, image.height);
-    const width = long > tiling.longSide ? Math.max(1, Math.round((image.width * tiling.longSide) / long)) : image.width;
-    const height = long > tiling.longSide ? Math.max(1, Math.round((image.height * tiling.longSide) / long)) : image.height;
-    const planes = resizeArea(pixels, image.width, image.height, width, height);
-    const stride = Math.round(size * (1 - tiling.overlap));
+    // `overlap` (docs/contracts.md, section 1). NMS runs once, over every tile's candidates in the
+    // shrunk image's pixels: boxes that different tiles give for one face merge when they overlap
+    // by more than nmsIoU, as those of a face lying whole in two tiles do. A face that no tile holds
+    // whole, which can happen when it is larger than the overlap, can come back as several boxes.
+    const { width, height } = tiledSize(image.width, image.height, tiling.longSide);
+    const planes = resizeArea(readPixels(image), image.width, image.height, width, height);
     candidates = await tileCandidates(planes, width, height, size, stride, (tensor) => detectTensor(session, tensor, size, minScore));
     scaleX = width / image.width;
     scaleY = height / image.height;

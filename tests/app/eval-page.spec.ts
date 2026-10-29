@@ -11,9 +11,17 @@ import { facesCoveredProblems } from '../privacy/helpers/pixels.ts';
 import { poisonedPhoto } from '../privacy/helpers/poison.ts';
 
 type Box = { x: number; y: number; w: number; h: number; score: number };
+// docs/contracts.md, section 1, as the runner sends it.
+type DetectOptions = {
+  model: 'yunet' | 'yolo5face';
+  inputSize: number;
+  tiling: { kind: 'none' } | { kind: 'tiles'; longSide: number; overlap: number };
+  scoreThreshold: number;
+  nmsIoU: number;
+};
 type SolidMask = {
   decode(url: string): Promise<ImageBitmap>;
-  detectFaces(image: ImageBitmap, options: object): Promise<Box[]>;
+  detectFaces(image: ImageBitmap, options: DetectOptions): Promise<Box[]>;
   render(image: ImageBitmap, masks: Omit<Box, 'score'>[]): Promise<Blob>;
   info(): { ortVersion: string; backend: string; threads: number; modelSha256: string };
 };
@@ -62,18 +70,24 @@ function expectSameBoxes(found: Box[], expected: Box[], bound: { px: number; sco
 const MODEL_SHA256 = '8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4';
 // The options eval/run_detect.py passes for YuNet in the single setting, and with --tiles 1920,0.25, the
 // protocol's tiled setting (docs/eval-protocol.md, part B).
-const RUNNER_OPTIONS = { model: 'yunet', inputSize: 640, tiling: { kind: 'none' }, scoreThreshold: 0.05, nmsIoU: 0.3 };
-const TILED_OPTIONS = { ...RUNNER_OPTIONS, tiling: { kind: 'tiles', longSide: 1920, overlap: 0.25 } };
+const RUNNER_OPTIONS: DetectOptions = { model: 'yunet', inputSize: 640, tiling: { kind: 'none' }, scoreThreshold: 0.05, nmsIoU: 0.3 };
+const TILED_OPTIONS: DetectOptions = { ...RUNNER_OPTIONS, tiling: { kind: 'tiles', longSide: 1920, overlap: 0.25 } };
 const ORT_VERSION: string = JSON.parse(
   readFileSync(new URL('../../app/node_modules/onnxruntime-web/package.json', import.meta.url), 'utf8'),
 ).version;
 
-/** Serves bytes on the page's own origin, as the runner does, decodes and detects them, and renders the first box. */
-async function runPage(page: Page, image: Uint8Array, options: object = RUNNER_OPTIONS) {
+/** Opens the eval page with the image served on its own origin, as the runner serves it, and returns its URL. */
+async function openPage(page: Page, image: Uint8Array): Promise<string> {
   const url = `${EVAL_ORIGIN}/__eval__/images/photo.jpg`;
   await page.route(url, (route) => route.fulfill({ body: Buffer.from(image), contentType: 'image/jpeg' }));
   await page.goto(EVAL_PAGE);
   await page.waitForFunction(() => (window as unknown as { solidMask?: unknown }).solidMask !== undefined);
+  return url;
+}
+
+/** Serves bytes on the page's own origin, as the runner does, decodes and detects them, and renders the first box. */
+async function runPage(page: Page, image: Uint8Array, options: DetectOptions = RUNNER_OPTIONS) {
+  const url = await openPage(page, image);
   const result = await page.evaluate(
     async ({ url, options }) => {
       const api = (window as unknown as { solidMask: SolidMask }).solidMask;
@@ -135,6 +149,35 @@ test('in the tiled setting, the eval page finds the boxes OpenCV finds tile by t
   const photo = await poisonedPhoto();
   const result = await runPage(page, new Uint8Array(await readFile(photo.sourcePath)), TILED_OPTIONS);
   expectSameBoxes(result.boxes, OPENCV_TILES, tolerance(browserName), 'tiled');
+});
+
+test('in the tiled setting, a photo no longer than longSide runs at its own size, never enlarged', async ({ page }) => {
+  // Most Open Images copies take this path: at most 1,024 px, below the protocol's 1,920. The golden photo, 4,000 px
+  // long, never does, so here it is drawn at a quarter of its size, 750 x 1000, and detected with longSide 1000
+  // (its own size) and 4000 (which would enlarge it four times): the boxes must be the very same.
+  const photo = await poisonedPhoto();
+  const url = await openPage(page, new Uint8Array(await readFile(photo.sourcePath)));
+  const [ownSize, larger] = await page.evaluate(
+    async ({ url, options }) => {
+      const api = (window as unknown as { solidMask: SolidMask }).solidMask;
+      const bitmap = await api.decode(url);
+      const canvas = document.createElement('canvas');
+      canvas.width = bitmap.width / 4;
+      canvas.height = bitmap.height / 4;
+      canvas.getContext('2d')?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      bitmap.close();
+      const small = await createImageBitmap(canvas);
+      try {
+        const tiled = (longSide: number) => api.detectFaces(small, { ...options, tiling: { kind: 'tiles', longSide, overlap: 0.25 } });
+        return [await tiled(1000), await tiled(4000)];
+      } finally {
+        small.close();
+      }
+    },
+    { url, options: RUNNER_OPTIONS },
+  );
+  expect(ownSize.filter((b) => b.score >= 0.5), 'faces found at 750 x 1000').not.toHaveLength(0);
+  expect(larger, 'boxes with longSide 4000').toEqual(ownSize);
 });
 
 test('the eval page turns a photo stored turned upright by its EXIF orientation, as the runner relies on', async ({ page }) => {
